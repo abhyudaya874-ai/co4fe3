@@ -55,7 +55,7 @@ const BEFORE = [
   'FALSE_VALUES = {"0", "false", "no"}',
   "",
   "",
-  "def get_verbose_flag(key: str = 'MINIPKG_VERBOSE') -> bool:",
+  'def get_verbose_flag(key: str = "MINIPKG_VERBOSE") -> bool:',
   '    """Return True when the environment variable ``key`` is set to a truthy value.',
   "",
   '    The values ``"0"``, ``"false"`` and ``"no"`` count as false. Any other',
@@ -107,6 +107,7 @@ suite("inline edit (Task A shape)", () => {
     await fake?.close();
     const cfg = vscode.workspace.getConfiguration("co4fe3");
     await cfg.update("models.order", undefined, vscode.ConfigurationTarget.Workspace);
+    await cfg.update("trueforge.url", undefined, vscode.ConfigurationTarget.Workspace);
     if (ownServer) {
       ownServer.child.kill("SIGTERM");
       setTimeout(() => ownServer?.child.kill("SIGKILL"), 3000).unref();

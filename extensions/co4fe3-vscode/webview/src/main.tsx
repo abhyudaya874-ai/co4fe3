@@ -1,6 +1,9 @@
 import { createRoot } from "react-dom/client";
+import { App } from "./App.js";
 import "./main.css";
 
-// Mounts the panel. Workflow 05 replaces <p> with <App /> and owns acquireVsCodeApi() here.
+// Mounts the panel and owns acquireVsCodeApi() (the vscode-extension skill: once, here).
+const api = acquireVsCodeApi();
 const root = document.getElementById("root");
-if (root) createRoot(root).render(<p>co4fe3</p>);
+if (root) createRoot(root).render(<App post={(m) => api.postMessage(m)} />);
+declare function acquireVsCodeApi(): { postMessage(m: unknown): void; setState(s: unknown): void; getState(): unknown };

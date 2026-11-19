@@ -8,6 +8,9 @@ export function makeClient(baseUrl: string): TrueForge {
 export const STREAM = { timeoutInSeconds: 600, maxRetries: 0 } as const;
 export const ONCE = { timeoutInSeconds: 15, maxRetries: 0 } as const;
 
+/** The session page in TrueForge's UI (spike row 8: the route is `/sessions/:sessionId`). */
+export const sessionUrl = (base: string, sessionId: string): string => `${base.replace(/\/$/, "")}/sessions/${sessionId}`;
+
 /** Cheap liveness probe used at activation and before every turn. */
 export async function health(client: TrueForge, signal?: AbortSignal): Promise<{ ok: true } | { ok: false; detail: string }> {
   try {

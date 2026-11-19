@@ -1,6 +1,6 @@
 import type { TrueForge } from "@truefoundry/trueforge-sdk";
 import type { AttemptUi } from "@co4fe3/agent-core";
-import { runTurn, STREAM, type TurnOutcome } from "@co4fe3/agent-core";
+import { runTurn, STREAM, type TurnOutcome, type TurnHooks } from "@co4fe3/agent-core";
 
 export type InlineResult = Extract<TurnOutcome, { status: "done" }> | Extract<TurnOutcome, { status: "cancelled" }> | Extract<TurnOutcome, { status: "error" }>;
 
@@ -14,6 +14,12 @@ export class Router {
   label(mode: "inline" | "agent"): string { return this.order(mode)[0] ?? "(no model configured)"; }
   lastModel(): string { return this.last ?? this.label("inline"); }
   currentModel(): string { return this.label("inline"); }
+
+  /** One agent turn on the panel's chat session: tools enabled, pauses answered by the panel. */
+  async agent(session: { id: string; model: string }, text: string, hooks: TurnHooks, signal: AbortSignal): Promise<TurnOutcome> {
+    this.last = session.model;
+    return await runTurn({ client: this.getClient(), sessionId: session.id, text, signal, hooks });
+  }
 
   /** One inline-edit turn on a pre-warmed session: text only, no tools (rule 60, lever 1). */
   async inline(prompt: string, ui: AttemptUi, signal: AbortSignal): Promise<InlineResult> {

@@ -8,6 +8,13 @@ import { Router } from "./forge/router.js";
 import { createApplier, applyDecision, saveCheckpoints } from "./review/apply.js";
 import { createReviewController } from "./review/controller.js";
 import { registerInlineEdit } from "./inline/inlineEdit.js";
+import { PanelView } from "./panel/panelView.js";
+import { AgentTurns } from "./panel/agentTurn.js";
+import { Crew } from "./panel/crew.js";
+import type { Bridge } from "./panel/bridge.js";
+import { makeOnPause, jailedPathArg, type PauseDeps } from "./panel/pause.js";
+import { loadInstructions, commandPolicy, deny, allow, safeJson, RunCommand, type PendingCall, type TrueForgeApi } from "@co4fe3/agent-core";
+import type { UiCommand, PanelEvent } from "@co4fe3/agent-core/panel";
 import inlineAgent from "../../../agents/co4fe3-inline.agent.json";
 import coderAgent from "../../../agents/co4fe3-coder.agent.json";
 
@@ -61,6 +68,71 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     take: (mode, model) => sessions.take(mode, model),
     log: (l) => out.info(l),
   });
+  const panel = new PanelView(ctx);                                                              // 05 the webview
+  const crew = new Crew(cfg().mode, (e) => panel.bridge?.push(e));
+  const approveCommand = async (p: PendingCall, signal: AbortSignal): Promise<TrueForgeApi.TurnUserEventMessage> => {
+    const v = RunCommand.safeParse(safeJson(p.call?.function?.arguments));
+    const command = v.success ? v.data.command : String(p.call?.function?.arguments ?? "").slice(0, 200);
+    const policy = commandPolicy(command);
+    if (!policy.ok) return deny(p, `Refused by the command policy: ${policy.why}.`);
+    if (cfg().autoApprove.terminal) return allow(p);
+    const id = `cmd-${p.toolCallId}`;
+    panel.bridge?.push({ kind: "command", id, command, state: "asking" });
+    const verdict = await new Promise<"allow" | "deny">((resolve) => {
+      pendingCommands.set(id, resolve);
+      signal.addEventListener("abort", () => resolve("deny"), { once: true });
+    });
+    panel.bridge?.push({ kind: "command", id, command, state: verdict === "allow" ? "running" : "denied" });
+    return verdict === "allow" ? allow(p) : deny(p, "The user denied this command.");
+  };
+  const pendingCommands = new Map<string, (v: "allow" | "deny") => void>();
+  let lastSessionUrl: string | undefined;
+  const bridgePush = (e: PanelEvent): void => { if (e.kind === "status" && e.sessionUrl) lastSessionUrl = e.sessionUrl; panel.bridge?.push(e); };
+  const turns = new AgentTurns({
+    host, review, crew, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
+    cfg, serverName,
+    instructions: () => loadInstructions(host),
+    packFor: async () => ({ items: [], used: 0, budget: cfg().context.packTokens, skipped: [], path: "none" }),   // workflow 06 wires the IndexStore
+    approveCommand, out,
+  }, makeOnPause);
+  panel.onCommand = (m: UiCommand) => {                                                            // 05 the UiCommand switch
+    switch (m.type) {
+      case "ready": panel.bridge?.flush(); break;
+      case "send": void turns.send(m.text); break;
+      case "stop": turns.stop(); break;
+      case "decide": {
+        const p = review.store.get(m.key);
+        if (p) { review.store.decide(m.key, m.hunkId, m.verdict); review.refresh(p.path, m.key); }
+        break;
+      }
+      case "decideAll": {
+        const p = review.store.get(m.key);
+        if (p) { review.store.decideAll(m.key, m.verdict); review.refresh(p.path, m.key); }
+        break;
+      }
+      case "openDiff": {
+        const p = review.store.get(m.key);
+        if (p) void vscode.commands.executeCommand("vscode.diff", p.before === null ? vscode.Uri.from({ scheme: "co4fe3-proposal", path: `/${p.path}`, query: `key=${p.key}&side=empty` }) : vscode.Uri.file(`${host.root}/${p.path}`), vscode.Uri.from({ scheme: "co4fe3-proposal", path: `/${p.path}`, query: `key=${p.key}&side=right` }), `${p.path} ↔ proposed by ${p.by}`);
+        break;
+      }
+      case "command": {
+        const resolve = pendingCommands.get(m.id);
+        if (resolve) { pendingCommands.delete(m.id); resolve(m.verdict); }
+        break;
+      }
+      case "undo": void applier.undo(m.checkpointId); break;
+      case "revertTurn": for (const cp of applier.ofTurn(m.turnId)) void applier.undo(cp.id); break;
+      case "openSession": {
+        const url = lastSessionUrl;
+        if (url) void vscode.env.openExternal(vscode.Uri.parse(url));
+        break;
+      }
+      case "pickModel": void vscode.commands.executeCommand("co4fe3.pickModel"); break;
+      case "setMode": void vscode.workspace.getConfiguration("co4fe3").update("mode", m.mode); break;
+      case "complete": break;   // @ and / autocomplete arrive with workflow 06
+    }
+  };
+  ctx.subscriptions.push(vscode.window.registerWebviewViewProvider(PanelView.id, panel, { webviewOptions: { retainContextWhenHidden: true } }));
   registerInlineEdit(ctx, {                                                                      // 04 Task A
     host, review, sessions, router, out,
     status: { inline: (p) => status.inline(p), setTtft: (ms, m) => status.setTtft(ms, m) },

@@ -4,13 +4,13 @@ import type { IncomingMessage } from "node:http";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TrueForge } from "@truefoundry/trueforge-sdk";
+import { TrueForge, type TrueForgeApi } from "@truefoundry/trueforge-sdk";
 import { inject } from "vitest";
 import { startFakeOpenAI, toolName, type Script } from "../fakes/fake-openai.js";
-import { runTurn, allow, reply, type TurnOutcome, type TfEvent, type EventIndex, type PendingCall } from "../../packages/agent-core/src/forge/turn.js";
+import { runTurn, allow, deny, reply, type TurnOutcome, type TfEvent, type EventIndex, type PendingCall } from "../../packages/agent-core/src/forge/turn.js";
 import { createEditorMcpServer, type McpDeps } from "../../packages/agent-core/src/mcp/server.js";
 import { startMcpHttp, type McpHttp } from "../../packages/agent-core/src/mcp/http.js";
-import { ReviewStore } from "../../packages/agent-core/src/review/store.js";
+import { ReviewStore, proposalKey, planEdit, toHunks, jail, ProposeEdit, safeJson, toolNameOf, type Proposal } from "../../packages/agent-core/src/index.js";
 import { Board } from "../../packages/agent-core/src/crew/board.js";
 import { TurnPolicy } from "../../packages/agent-core/src/runtime/policy.js";
 import type { Applier, EditorHost, FileChange } from "../../packages/agent-core/src/host.js";
@@ -27,7 +27,7 @@ export interface Harness {
   root: string;
   applier: Applier & { last(): Checkpoint | undefined };
   read(rel: string): Promise<string>;
-  turn(text: string, o?: { onReview?: (p: unknown) => { accept: string[] }; signal?: AbortSignal }): Promise<TurnOutcome>;
+  turn(text: string, o?: { onReview?: (p: Proposal) => { accept: string[] } | Promise<{ accept: string[] }>; signal?: AbortSignal }): Promise<TurnOutcome>;
   close(): Promise<void>;
 }
 
@@ -81,8 +81,7 @@ async function readJson(req: IncomingMessage, max: number): Promise<unknown> {
 }
 
 /** The editor MCP server over the harness's NodeTestHost + TestApplier (the real createEditorMcpServer since workflow 02). */
-async function startTestMcp(host: EditorHost, applier: Applier): Promise<McpHttp> {
-  const review = new ReviewStore();
+async function startTestMcp(host: EditorHost, applier: Applier, review: ReviewStore): Promise<McpHttp> {
   const board = new Board();
   const policy = new TurnPolicy("test-turn");
   const deps: McpDeps = {
@@ -112,7 +111,8 @@ export async function startHarness(script: Script): Promise<Harness> {
   await cp(join(import.meta.dirname ?? ".", "../fixtures/minipkg"), root, { recursive: true });
   const host = nodeTestHost(root);
   const applier = testApplier(root);
-  const mcp = await startTestMcp(host, applier);
+  const review = new ReviewStore();
+  const mcp = await startTestMcp(host, applier, review);
   const mcpName = `co4fe3-test-${n}`;
   await client.settings.mcpServers.createOrUpdate({
     manifest: { type: "remote", name: mcpName, url: mcp.url, description: "integration test editor tools", auth: { type: "header", headers: { Authorization: `Bearer ${mcp.token}` } } },
@@ -125,7 +125,7 @@ export async function startHarness(script: Script): Promise<Harness> {
       const spec = {
         model: { name: model, params: { temperature: 0, maxTokens: 4096, parallelToolCalls: true } },
         instructions: "You are a coding agent in the user's workspace. Use the editor tools. Be brief.",
-        mcpServers: [{ name: mcpName, preload: true }],
+        mcpServers: [{ name: mcpName, preload: true, requireApprovalForTools: ["propose_edit", "run_command"] }],
         config: { askUserQuestions: { enabled: false }, generativeUi: { enabled: false }, dynamicSubAgents: { enabled: false }, iterationLimit: 16 },
       };
       const { data: session } = await client.sessions.create({ agent: { spec } }, { timeoutInSeconds: 15, maxRetries: 0 });
@@ -134,7 +134,29 @@ export async function startHarness(script: Script): Promise<Harness> {
         onEvent: (e: TfEvent, _index: EventIndex): void => { events.push(e); },
         onPause: async (pending: PendingCall[], _index: EventIndex, signal: AbortSignal) => {
           if (signal.aborted) throw new Error("aborted");
-          return pending.flatMap((p) => p.kind === "approval" ? [allow(p)] : [reply(p, "")]);
+          // The product's pause flow (panel/pause.ts + the propose_edit handler), driven by onReview.
+          return await Promise.all(pending.map(async (p): Promise<TrueForgeApi.TurnUserEventMessage> => {
+            if (p.kind === "response") return reply(p, "");
+            const tool = toolNameOf(p.call, mcpName);
+            if (tool !== "propose_edit") return allow(p);
+            const v = ProposeEdit.safeParse(safeJson(p.call?.function?.arguments));
+            if (!v.success) return deny(p, "invalid args");
+            const rel = jail(root, v.data.path);
+            const before = await host.readText(rel);
+            const plan = planEdit(before, (v.data.edits ?? []).map((x) => ({ oldString: x.old_string, newString: x.new_string })), v.data.content);
+            if (!plan.ok) return deny(p, plan.error);
+            const hunks = toHunks(before ?? "", plan.after);
+            const proposal: Proposal = { key: proposalKey(rel, v.data), turnId: "test-turn", threadId: p.threadId, toolCallId: p.toolCallId, by: "lead", path: rel, why: v.data.why, before, after: plan.after, hunks, verdict: Object.fromEntries(hunks.map((h) => [h.id, "pending" as const])), baseline: [] };
+            review.stage(proposal);
+            // The product's ReviewStore.settled rejects when the signal aborts (Stop); mirror that here.
+            const decision = await Promise.race([
+              o?.onReview ? o.onReview(proposal) : Promise.resolve({ accept: proposal.hunks.map((h) => h.id) }),
+              new Promise<never>((_, reject) => { signal.addEventListener("abort", () => reject(new Error("review aborted")), { once: true }); }),
+            ]);
+            for (const h of proposal.hunks) review.decide(proposal.key, h.id, decision.accept.includes(h.id) ? "accepted" : "rejected");
+            if (!decision.accept.length) return deny(p, `The user rejected all ${hunks.length} hunks for ${rel}.`);
+            return allow(p);
+          }));
         },
       };
       return await runTurn({ client, sessionId: session.id, text, signal: o?.signal ?? new AbortController().signal, hooks });
