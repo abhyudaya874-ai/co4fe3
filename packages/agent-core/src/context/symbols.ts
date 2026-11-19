@@ -1,9 +1,10 @@
-export interface Sym { name: string; kind: "class" | "def" | "function" | "command" | "const"; line: number; sig: string; parent?: string; doc?: string }
+export interface Sym { name: string; kind: "class" | "def" | "function" | "command" | "const" | "doc"; line: number; sig: string; parent?: string; doc?: string }
 
 const PY_DEF = /^(\s*)(?:async\s+)?(def|class)\s+([A-Za-z_]\w*)\s*(\([^)]*\)?[^:]*)?:/;
 const PY_CMD = /^\s*@[\w.]+\.command\(\s*["']([\w-]+)["']/;     // click: @click.command("routes") → a "command" symbol
 const TS_DEF = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(function|class|const|interface|type)\s+([A-Za-z_$][\w$]*)/;
-
+const MD_HEAD = /^#{1,6}\s+(.+?)\s*#*\s*$/;
+const RST_UNDER = /^[=~\-^"']{3,}\s*$/;
 export function extractSymbols(path: string, text: string): Sym[] {
   const lines = text.split("\n");
   const out: Sym[] = [];
@@ -22,6 +23,15 @@ export function extractSymbols(path: string, text: string): Sym[] {
     } else if (/\.(m?[jt]sx?)$/.test(path)) {
       const m = TS_DEF.exec(raw);
       if (m) out.push({ name: m[2]!, kind: m[1] === "class" ? "class" : m[1] === "function" ? "function" : "const", line: i + 1, sig: raw.trim().slice(0, 160) });
+    } else if (path.endsWith(".md")) {
+      const m = MD_HEAD.exec(raw);
+      if (m) out.push({ name: m[1]!.replace(/[`*_]/g, ""), kind: "doc", line: i + 1, sig: raw.trim().slice(0, 160) });
+    } else if (path.endsWith(".rst")) {
+      // an rst heading is a title line followed by a line of =-~^"' underlining it
+      const next = lines[i + 1] ?? "";
+      if (raw.trim().length >= 3 && RST_UNDER.test(next) && next.trim().length >= Math.min(raw.trim().length, 8)) {
+        out.push({ name: raw.trim(), kind: "doc", line: i + 1, sig: raw.trim().slice(0, 160) });
+      }
     }
   });
   return out;

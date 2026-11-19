@@ -6,11 +6,18 @@ import { Bridge } from "./bridge.js";
 export class PanelView implements vscode.WebviewViewProvider {
   static readonly id = "co4fe3.panel";
   bridge: Bridge | null = null;
+  private view: vscode.WebviewView | null = null;
   onCommand: (m: UiCommand) => void = () => undefined;
 
   constructor(private ctx: vscode.ExtensionContext) {}
 
+  /** Out-of-band messages that are not transcript events (completion lists). */
+  completions(kind: "@" | "/", items: string[]): void {
+    void this.view?.webview.postMessage({ type: "completions", kind, items });
+  }
+
   resolveWebviewView(view: vscode.WebviewView): void {
+    this.view = view;
     const media = vscode.Uri.joinPath(this.ctx.extensionUri, "media");
     view.webview.options = { enableScripts: true, localResourceRoots: [media] };
     const nonce = randomBytes(16).toString("base64");

@@ -11,13 +11,15 @@ export function App({ post }: { post: Post }) {
   const [s, dispatch] = useReducer(applyPanelEvent, undefined, emptyPanel);
   const [mode, setModeState] = useState<Mode>("agent");
   const [model, setModel] = useState("…");
+  const [completions, setCompletions] = useState<{ kind: "@" | "/"; items: string[] } | null>(null);
 
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
-      const m = ev.data as { type: string; batch?: PanelEvent[]; model?: string; mode?: Mode };
+      const m = ev.data as { type: string; batch?: PanelEvent[]; model?: string; mode?: Mode; kind?: "@" | "/"; items?: string[] };
       if (m.type === "events" && m.batch) for (const e of m.batch) dispatch(e);
       if (m.type === "hello" && m.model) setModel(m.model);
       if (m.type === "hello" && m.mode) setModeState(m.mode);
+      if (m.type === "completions" && m.kind) setCompletions({ kind: m.kind, items: m.items ?? [] });
     };
     window.addEventListener("message", handler);
     post({ type: "ready" });
@@ -34,5 +36,11 @@ export function App({ post }: { post: Post }) {
       h(Transcript, { s, onDecide: decide, onOpen: open, onVerdict: commandVerdict }),
       h(BoardCard, { entries: s.board })),
     h(StatusLine, { e: s.status, sessionUrl: s.status?.sessionUrl, onOpenSession: () => post({ type: "openSession" }) }),
-    h(Composer, { busy: s.status?.state === "running" || s.status?.state === "paused", onSend: (t) => post({ type: "send", text: t }), onStop: () => post({ type: "stop" }) }));
+    h(Composer, {
+      busy: s.status?.state === "running" || s.status?.state === "paused",
+      onSend: (t) => { setCompletions(null); post({ type: "send", text: t }); },
+      onStop: () => post({ type: "stop" }),
+      completions,
+      onComplete: (kind, prefix) => post({ type: "complete", kind, prefix }),
+    }));
 }

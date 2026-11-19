@@ -2,3 +2,4 @@
 export * from "./events.js";
 export * from "./reducer.js";
 export * from "./coalesce.js";
+export { renderPack } from "../context/pack.js";   // "View as sent" renders the exact text the model got

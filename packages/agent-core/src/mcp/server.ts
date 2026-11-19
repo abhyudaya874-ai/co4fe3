@@ -18,6 +18,8 @@ import type { InstructionSet } from "../instructions/load.js";
 import { ProposeEdit, ProposeEditShape, RunCommandShape, proposalKey } from "./schemas.js";
 import { extractSymbols } from "../context/symbols.js";
 import { extractHoverSignature, renderSymbolPack, shapeSymbolPack, type PackTask, type SymbolFacts } from "../context/symbolPack.js";
+import { rankFiles } from "../context/repomap.js";
+import { assemblePack, renderPack } from "../context/pack.js";
 
 export interface McpDeps {
   host: EditorHost; applier: Applier; review: ReviewStore; board: Board;
@@ -57,11 +59,12 @@ export function createEditorMcpServer(d: McpDeps): McpServer {
     description: "WHEN: you are starting a task and do not know where things live. Returns ranked file outlines with the reasons they were chosen. For an exact string use search_workspace; for a known symbol use find_symbol.",
     inputSchema: { query: z.string().max(2000).describe("What the user asked, in their words."), budget_tokens: z.number().int().min(500).max(4000).default(2500) },
     annotations: ro,
-  }, wrap("repo_map", async () => {
+  }, wrap("repo_map", async ({ query, budget_tokens }) => {
     const ix = d.index();
     if (!ix) throw new ToolInputError("The index is still building. Use search_workspace for now.");
-    // Ranking + pack rendering land with the context workflow (rule 40); until then the alternatives work.
-    throw new ToolInputError("repo_map's ranking is not wired yet. Use search_workspace (exact strings) or find_symbol (known names) meanwhile.");
+    const ranked = rankFiles(ix, { text: query, mentioned: [], recent: [] });
+    if (!ranked.length) return text(`Nothing in the index ranks for ${JSON.stringify(query)}. Try search_workspace with an exact string.`);
+    return text(renderPack({ ...assemblePack(ix, ranked, [], budget_tokens), path: "full" }));
   }));
 
   s.registerTool("search_workspace", {

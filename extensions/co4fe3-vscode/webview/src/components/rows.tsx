@@ -1,6 +1,7 @@
-import { createElement as h, memo } from "react";
+import { createElement as h, memo, useState } from "react";
 import type { PanelEvent } from "@co4fe3/agent-core/panel";
 import { md } from "../md.js";
+import { renderPack } from "@co4fe3/agent-core/panel";
 
 export const UserBubble = memo(function UserBubble({ e }: { e: Extract<PanelEvent, { kind: "user" }> }) {
   return h("div", { className: "row user" }, h("div", { className: "bubble user-bubble" }, e.text));
@@ -38,13 +39,25 @@ export const MessageBubble = memo(function MessageBubble({ e }: { e: Extract<Pan
 
 export const PackCard = memo(function PackCard({ e }: { e: Extract<PanelEvent, { kind: "pack" }> }) {
   const p = e.pack;
-  if (!p.items.length) return null;
+  const [sent, setSent] = useState(false);
+  if (!p.items.length) return h("div", { className: "card pack muted" }, "Context · skipped (index still building)");
+  const tag = p.path === "quick" ? " · quick pack" : p.path === "none" ? " · no pack" : "";
+  const ranksOf = (why: string[]): string => (why.at(-1)?.includes("#") ? why.at(-1)! : "");
+  const reasonsOf = (why: string[]): string[] => (why.at(-1)?.includes("#") ? why.slice(0, -1) : why);
   return h("div", { className: "card pack" },
-    h("div", { className: "card-head" }, "Context · ", p.path, " pack ", h("span", { className: "muted" }, `${p.used} / ${p.budget} tok`)),
-    p.items.map((i) => h("div", { key: i.path, className: "pack-row" },
-      h("span", { className: "pack-path" }, i.path), " ",
-      h("span", { className: "muted" }, `${i.tokens} tok · ${i.why.join("; ")}`))),
-    p.skipped.length > 0 && h("div", { className: "muted" }, `skipped: ${p.skipped.map((s) => s.path).join(", ")}`));
+    h("div", { className: "card-head" },
+      `Context · ${p.items.length} file${p.items.length === 1 ? "" : "s"} · ${p.used.toLocaleString()} / ${p.budget.toLocaleString()} tok`,
+      tag && h("span", { className: "chip warn" }, tag),
+      " ", h("button", { className: "link", onClick: () => setSent(!sent) }, sent ? "Hide" : "View as sent")),
+    h("div", { className: "pack-bar" }, h("div", { className: "pack-fill", style: `width:${Math.min(100, (p.used / Math.max(1, p.budget)) * 100)}%` })),
+    sent
+      ? h("pre", { className: "pack-sent" }, renderPack(p))
+      : p.items.map((i) => h("div", { key: i.path, className: `pack-row${i.pinned ? " pinned" : ""}` },
+          h("span", { className: "pack-path" }, i.path), " ",
+          h("span", { className: "muted" }, `${i.tokens} tok`),
+          reasonsOf(i.why).map((r, k) => h("span", { key: k, className: "muted" }, ` · ${r}`)),
+          ranksOf(i.why) && h("span", { className: "ranks" }, ranksOf(i.why).split(" · ").map((r, k) => h("span", { key: k, className: "rank-chip" }, r))))),
+    !sent && p.skipped.length > 0 && h("div", { className: "muted" }, `+${p.skipped.length} more ranked files were left out (over budget)`));
 });
 
 export const BoardCard = memo(function BoardCard({ entries }: { entries: { key: string; value: string; by: string; at: number }[] }) {

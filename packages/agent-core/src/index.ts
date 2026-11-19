@@ -20,6 +20,7 @@ export * from "./review/checkpoints.js";
 export * from "./review/verify.js";
 export * from "./review/inline.js";
 export * from "./context/tokens.js";
+export * from "./context/rrf.js";
 export * from "./context/budget.js";
 export * from "./context/symbols.js";
 export * from "./context/symbolPack.js";

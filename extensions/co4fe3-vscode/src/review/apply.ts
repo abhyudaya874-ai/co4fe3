@@ -6,7 +6,7 @@ import type { CheckpointLog } from "@co4fe3/agent-core";
 import { currentText, fullRange } from "../host/editorHost.js";
 
 /** The ONLY writer (law 3). One write at a time per path; every apply records a checkpoint; undo restores exact bytes. */
-export function createApplier(root: string, log: CheckpointLog, onChange: () => void): Applier & { last(): ReturnType<CheckpointLog["last"]>; ofTurn(turnId: string): ReturnType<CheckpointLog["ofTurn"]> } {
+export function createApplier(root: string, log: CheckpointLog, onChange: (path: string) => void): Applier & { last(): ReturnType<CheckpointLog["last"]>; ofTurn(turnId: string): ReturnType<CheckpointLog["ofTurn"]> } {
   const q = new KeyedQueue();
   const uriOf = (rel: string): vscode.Uri => vscode.Uri.file(path.join(root, rel));
   const inside = (rel: string): boolean => {
@@ -28,7 +28,7 @@ export function createApplier(root: string, log: CheckpointLog, onChange: () => 
       if (!(await vscode.workspace.applyEdit(edit))) return { ok: false, why: "io", detail: "VS Code refused the edit" };
       await (await vscode.workspace.openTextDocument(uri)).save();    // whole file, one save: never half-written
       const cp = log.push({ path: c.path, before: c.before, after: c.after, turnId: c.turnId, reason: c.reason });
-      onChange();                                                    // panel + status bar show "Undo"
+      onChange(c.path);                                             // panel + status bar show "Undo"; the index re-reads the file
       return { ok: true, checkpointId: cp.id };
     }),
     undo: (id) => {
@@ -49,7 +49,7 @@ export function createApplier(root: string, log: CheckpointLog, onChange: () => 
           await (await vscode.workspace.openTextDocument(uri)).save();
         }
         log.markUndone(id);
-        onChange();
+        onChange(cp.path);
         return { ok: true, checkpointId: id };
       });
     },

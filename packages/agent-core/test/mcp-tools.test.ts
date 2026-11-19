@@ -9,6 +9,7 @@ import { Board } from "../src/crew/board.js";
 import { TurnPolicy } from "../src/runtime/policy.js";
 import { TOOLS } from "../src/runtime/modes.js";
 import type { EditorHost, SearchHit } from "../src/host.js";
+import { indexFile, buildIndex, type RepoIndex } from "../src/context/repomap.js";
 import { splitLines } from "../src/review/lines.js";
 
 /** In-memory EditorHost: the files live in a Map; search scans them. */
@@ -38,7 +39,7 @@ function fakeHost(files: Record<string, string>): EditorHost {
   };
 }
 
-function deps(host: EditorHost, o: { policy?: TurnPolicy } = {}): McpDeps & { applied: string[] } {
+function deps(host: EditorHost, o: { policy?: TurnPolicy; index?: RepoIndex } = {}): McpDeps & { applied: string[] } {
   const applied: string[] = [];
   const policy = o.policy ?? new TurnPolicy("t1");
   return {
@@ -50,7 +51,7 @@ function deps(host: EditorHost, o: { policy?: TurnPolicy } = {}): McpDeps & { ap
     },
     review: new ReviewStore(),
     board: new Board(),
-    index: () => null,
+    index: () => o.index ?? null,
     instructions: async () => ({ items: [], sources: [] }),
     turn: () => ({ id: "t1", signal: new AbortController().signal, policy }),
     changes: () => [],
@@ -167,6 +168,27 @@ describe("mcp server over HTTP (workflow 02)", () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain("## grow (src/m.py:2, from index)");
     expect(r.text).toContain("def grow(self):");
+  });
+
+  it("repo_map ranks file outlines with reasons when the index is ready", async () => {
+    const files = {
+      "src/cli.py": "import click\n@click.command(\"routes\")\ndef routes_command():\n    pass\n",
+      "src/helpers.py": "def get_flag():\n    return True\n",
+      "docs/cli.rst": "Commands\n========\n\nroutes - list routes\n",
+    };
+    const ix = buildIndex(Object.entries(files).map(([p, t]) => indexFile(p, t)));
+    const call = await start(deps(fakeHost(files), { index: ix }));
+    const r = await call.call("repo_map", { query: "add a new command shown in --help", budget_tokens: 2500 });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("<context_pack");
+    expect(r.text).toContain("src/cli.py");
+  });
+
+  it("repo_map without an index says what to use instead", async () => {
+    const call = await start(deps(fakeHost({ "a.py": "x\n" })));
+    const r = await call.call("repo_map", { query: "anything", budget_tokens: 2500 });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("index is still building");
   });
 
   it("run_command refuses policy violations and runs plain commands", async () => {

@@ -13,8 +13,9 @@ import { AgentTurns } from "./panel/agentTurn.js";
 import { Crew } from "./panel/crew.js";
 import type { Bridge } from "./panel/bridge.js";
 import { makeOnPause, jailedPathArg, type PauseDeps } from "./panel/pause.js";
-import { loadInstructions, commandPolicy, deny, allow, safeJson, RunCommand, type PendingCall, type TrueForgeApi } from "@co4fe3/agent-core";
+import { loadInstructions, commandPolicy, deny, allow, safeJson, RunCommand, indexFile, rankFiles, type PendingCall, type TrueForgeApi } from "@co4fe3/agent-core";
 import type { UiCommand, PanelEvent } from "@co4fe3/agent-core/panel";
+import { IndexStore, ContextPacks, indexWorkspaceInBackground } from "./context/indexer.js";
 import inlineAgent from "../../../agents/co4fe3-inline.agent.json";
 import coderAgent from "../../../agents/co4fe3-coder.agent.json";
 
@@ -36,19 +37,35 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     return client;
   };
   const checkpoints = new CheckpointLog();                                                       // 03 agent-core review/checkpoints.ts
-  const persist = (): void => {
+  const persist = (rel?: string): void => {
     saveCheckpoints(ctx.storageUri, JSON.stringify(checkpoints.toJSON()));
     status.showUndo();
+    if (rel) {
+      changedPaths.unshift(rel);
+      changedPaths.splice(20);
+      void reindexFile(rel);                                                                     // rule 40: re-index on every applied change
+    }
   };                                                                                             // 03: persist the log, refresh status.undo
   const applier = createApplier(host.root, checkpoints, persist);                                 // 03 the only writer
   const review = createReviewController(ctx, { store: new ReviewStore(), root: host.root });      // 03 diff editor + CodeLens + decisions
   const board = new Board();
   const policy = new TurnPolicy("idle");
+  const index = new IndexStore();                                                                // 06 context/indexer.ts
+  void indexWorkspaceInBackground(host, index, out);                                             // 06 chunked, never awaited
+  const reindexFile = async (rel: string): Promise<void> => {
+    const text = await host.readText(rel);
+    if (text !== null) index.update(indexFile(rel, text));                                       // rebuilds maps over the entries (cheap)
+  };
+  const changedPaths: string[] = [];                                                             // this session's applied edits, newest first
+  const packs = new ContextPacks(host, index, () => cfg().context.packTokens, out);              // 06 rule 40's retrieval budget
+  const idleTurn = { id: "idle", signal: new AbortController().signal, policy };
+  const turnRef: { idle: typeof idleTurn; current: typeof idleTurn } = { idle: idleTurn, current: idleTurn };   // 06: tools see the live turn
+  let lastInstructions: Awaited<ReturnType<typeof loadInstructions>> | null = null;
   const mcp = await startMcpHttp(() => createEditorMcpServer({
     host, applier, review: review.store, board,
-    index: () => null,
-    instructions: async () => ({ items: [], sources: [] }),
-    turn: () => ({ id: "idle", signal: new AbortController().signal, policy }),
+    index: () => index.get(),
+    instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
+    turn: () => turnRef.current,
     changes: (turnId) => applier.ofTurn(turnId),
     log: (l) => out.info(l),
   }), (l) => out.info(l));                                                                       // 02 binds 127.0.0.1:0 only
@@ -58,7 +75,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {                      // a URL change re-registers (P8)
     if (e.affectsConfiguration("co4fe3.trueforge.url")) void registerEditorServer(getClient, serverName, mcp, status, out);
   }));
-  registerReviewCommands(ctx, { review, applier, checkpoints, out });                             // 03 commands
+  ctx.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => {                        // 06 re-index on save
+    const rel = vscode.workspace.asRelativePath(doc.uri, false);
+    if (!rel.startsWith("..")) void reindexFile(rel);
+  }));
+  ctx.subscriptions.push(vscode.workspace.onDidDeleteFiles((e) => {
+    for (const u of e.files) index.remove(vscode.workspace.asRelativePath(u, false));
+  }));
+  registerReviewCommands(ctx, { review, applier, checkpoints, index, out });                             // 03 commands
 
   const sessions = new SessionPool(getClient, (mode, model) => buildSpec(                            // 04 pre-warmed sessions
     (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec,
@@ -91,8 +115,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const turns = new AgentTurns({
     host, review, crew, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
     cfg, serverName,
-    instructions: () => loadInstructions(host),
-    packFor: async () => ({ items: [], used: 0, budget: cfg().context.packTokens, skipped: [], path: "none" }),   // workflow 06 wires the IndexStore
+    instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
+    packFor: (text, active, recent) => packs.packFor(text, active, recent),                  // 06
+    turn: turnRef,
+    recent: () => changedPaths,
     approveCommand, out,
   }, makeOnPause);
   panel.onCommand = (m: UiCommand) => {                                                            // 05 the UiCommand switch
@@ -129,7 +155,24 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       }
       case "pickModel": void vscode.commands.executeCommand("co4fe3.pickModel"); break;
       case "setMode": void vscode.workspace.getConfiguration("co4fe3").update("mode", m.mode); break;
-      case "complete": break;   // @ and / autocomplete arrive with workflow 06
+      case "complete": {
+        const pfx = m.prefix.toLowerCase();
+        const items: string[] = [];
+        if (m.kind === "@") {
+          const ix = index.get();                                    // files first, then symbols, ≤ 20 (rule 40)
+          if (ix) {
+            const files = [...ix.byPath.keys()].filter((p) => p.toLowerCase().includes(pfx)).sort((a, b) => a.length - b.length || a.localeCompare(b));
+            const syms = [...ix.defs.keys()].filter((n) => n.toLowerCase().includes(pfx)).sort();
+            items.push(...files, ...syms.map((n) => `symbol:${n}`));
+          }
+        } else {
+          for (const i of lastInstructions?.items ?? []) {
+            if (i.kind === "workflow" && i.name.toLowerCase().startsWith(pfx)) items.push(i.name);
+          }
+        }
+        panel.completions(m.kind, items.slice(0, 20));
+        break;
+      }
     }
   };
   ctx.subscriptions.push(vscode.window.registerWebviewViewProvider(PanelView.id, panel, { webviewOptions: { retainContextWhenHidden: true } }));
@@ -143,7 +186,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (pick === "Undo") void vscode.commands.executeCommand("co4fe3.undoLast");
       });
     },
-    index: () => null,   // workflow 06 wires the IndexStore
+    index: () => index.get(),
   });
 }
 
@@ -153,6 +196,7 @@ interface ReviewDeps {
   review: ReturnType<typeof createReviewController>;
   applier: ReturnType<typeof createApplier>;
   checkpoints: CheckpointLog;
+  index: IndexStore;
   out: vscode.LogOutputChannel;
 }
 
@@ -185,6 +229,15 @@ function registerReviewCommands(ctx: vscode.ExtensionContext, d: ReviewDeps): vo
   if (ctx.extensionMode === vscode.ExtensionMode.Development) {
     void vscode.commands.executeCommand("setContext", "co4fe3.devMode", true);
     ctx.subscriptions.push(vscode.commands.registerCommand("co4fe3.dev.sampleProposal", () => void sampleProposal(d)));
+    ctx.subscriptions.push(vscode.commands.registerCommand("co4fe3.dev.rank", async () => {
+      const text = await vscode.window.showInputBox({ prompt: "Prompt to rank files for" });
+      if (!text) return;
+      const ix = d.index.get();
+      if (!ix) return void vscode.window.showInformationMessage("The index is still building.");
+      const ranked = rankFiles(ix, { text, mentioned: [], recent: [] }).slice(0, 10);
+      d.out.info(`dev.rank "${text.slice(0, 80)}"\n${ranked.map((r, i) => `${i + 1}. ${r.path}\n   ${r.why.join(" · ")}`).join("\n")}`);
+      void vscode.window.showInformationMessage(`dev.rank: ${ranked.slice(0, 3).map((r) => r.path).join(", ")} — full list in the output channel`);
+    }));
   }
 }
 

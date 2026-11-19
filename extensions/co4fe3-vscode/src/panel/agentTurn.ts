@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet } from "@co4fe3/agent-core";
 import type { PanelEvent, UiCommand } from "@co4fe3/agent-core/panel";
-import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, type TurnOutcome } from "@co4fe3/agent-core";
+import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, type TurnOutcome } from "@co4fe3/agent-core";
 import type { Bridge } from "./bridge.js";
 import type { Crew } from "./crew.js";
 import type { PauseDeps, PauseMaker } from "./pause.js";
@@ -23,6 +23,9 @@ export interface AgentTurnDeps {
   instructions(): Promise<InstructionSet>;
   packFor(text: string, active?: string, recent?: string[]): Promise<ContextPack>;
   approveCommand(p: PendingCall, signal: AbortSignal): Promise<TrueForgeApi.TurnUserEventMessage>;
+  /** The live turn the MCP tools see (turn id for list_changes, signal so Stop kills run_command/search, per-turn policy). */
+  turn: { idle: { id: string; signal: AbortSignal; policy: TurnPolicy }; current: { id: string; signal: AbortSignal; policy: TurnPolicy } };
+  recent(): string[];
   out: vscode.LogOutputChannel;
 }
 
@@ -40,6 +43,7 @@ export class AgentTurns {
     if (this.running) return;                                     // Send is Stop while running (rule 20, trap 3)
     const ac = new AbortController(); this.running = ac;
     const turnKey = `t${Date.now().toString(36)}`;
+    this.d.turn.current = { id: turnKey, signal: ac.signal, policy: new TurnPolicy(turnKey) };
     const bridge = this.d.bridge;
     bridge.push({ kind: "user", turnId: turnKey, text });
     try {
@@ -69,6 +73,7 @@ export class AgentTurns {
       bridge.push({ kind: "status", state: "error", message: e instanceof Error ? e.message : String(e) });
       bridge.flush();
     } finally {
+      this.d.turn.current = this.d.turn.idle;
       this.running = null;
     }
   }
@@ -89,6 +94,8 @@ export class AgentTurns {
     const rel = vscode.workspace.asRelativePath(ed.document.uri, false);
     return rel;
   }
-  private recentPaths(): string[] { return []; }   // workflow 06 fills this from the indexer
+  private recentPaths(): string[] {
+    return [...vscode.window.visibleTextEditors.map((e) => vscode.workspace.asRelativePath(e.document.uri, false)), ...this.d.recent()];
+  }
 }
 
