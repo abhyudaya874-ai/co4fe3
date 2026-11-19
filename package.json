@@ -11,7 +11,7 @@
     "node": ">=22.14"
   },
   "scripts": {
-    "trueforge": "npx --yes @truefoundry/trueforge@0.185.1",
+    "trueforge": "OUTBOUND_URL_ALLOWED_HOSTS='[\"127.0.0.1\",\"localhost\"]' npx --yes @truefoundry/trueforge@0.185.1",
     "setup:trueforge": "node scripts/setup-trueforge.mjs",
     "bench:latency": "node scripts/bench-latency.mjs",
     "typecheck": "tsc -p packages/agent-core && tsc -p extensions/co4fe3-vscode && tsc -p extensions/co4fe3-vscode/webview && tsc -p test",

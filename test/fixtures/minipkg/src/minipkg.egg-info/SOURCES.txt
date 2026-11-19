@@ -1,0 +1,10 @@
+pyproject.toml
+src/minipkg/__init__.py
+src/minipkg/cli.py
+src/minipkg/helpers.py
+src/minipkg.egg-info/PKG-INFO
+src/minipkg.egg-info/SOURCES.txt
+src/minipkg.egg-info/dependency_links.txt
+src/minipkg.egg-info/requires.txt
+src/minipkg.egg-info/top_level.txt
+tests/test_cli.py

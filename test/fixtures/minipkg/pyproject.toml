@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minipkg"
+version = "0.1.0"
+description = "Tiny offline fixture that mimics flask's layout for co4fe3 tests"
+requires-python = ">=3.9"
+dependencies = ["click"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
