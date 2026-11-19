@@ -38,6 +38,7 @@ export class StatusItems {
   setModel(name: string): void { this.model.text = `$(sparkle) ${name.split("/").at(-1) ?? name}`; this.model.tooltip = name; }
   setMode(mode: string): void { this.mode.text = `$(comment) ${mode}`; }
   setTtft(ms: number, model: string): void { this.ttft.text = `⚡ ${(ms / 1000).toFixed(1)} s`; this.ttft.tooltip = `time to first token · ${model}`; }
+  inline(phase: string): void { this.ttft.text = `$(loading) ${phase}`; }   // the inline-edit phase while it runs
 
   /** Shows "↶ Undo" for 30 s after an apply (rule 30). */
   showUndo(): void {

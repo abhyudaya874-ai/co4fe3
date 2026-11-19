@@ -10,6 +10,8 @@ export interface ReviewController {
   readonly lens: HunkLens;
   /** Stages `p`, opens the diff, resolves when no hunk is pending. On abort: closes the diff, drops the proposal, rejects. */
   review(p: Proposal, signal: AbortSignal, o?: { focus?: boolean }): Promise<Decision>;
+  /** Inline edit: open the diff at once with the right side equal to the file, then stream into it. */
+  showStreaming(rel: string, key: string, before: string): Promise<void>;
   /** Inline edit: show streaming text on the right side before hunks exist. */
   preview(rel: string, key: string, text: string): void;
   closeStreaming(rel: string, key: string, message?: string): void;
@@ -42,6 +44,11 @@ export function createReviewController(ctx: vscode.ExtensionContext, deps: { sto
         deps.store.dropTurn(p.turnId);
         throw e;
       }
+    },
+    async showStreaming(rel, key, before) {
+      live.set(key, before);                                   // the right side starts equal to the file
+      const left = vscode.Uri.file(path.join(deps.root, rel));
+      await vscode.commands.executeCommand("vscode.diff", left, proposalUri(rel, key), `${path.basename(rel)} ↔ co4fe3 inline edit`, { preview: false, preserveFocus: true });
     },
     preview(rel, key, text) {
       live.set(key, text);

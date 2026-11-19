@@ -1,11 +1,15 @@
 import * as vscode from "vscode";
-import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, applyHunks, type Applier, type FileChange, type Proposal } from "@co4fe3/agent-core";
+import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, applyHunks, buildSpec, newErrors, renderProblem, type Applier, type FileChange, type Proposal, type AgentSpec } from "@co4fe3/agent-core";
 import { readConfig } from "./config.js";
 import { StatusItems } from "./status.js";
 import { createEditorHost, currentText } from "./host/editorHost.js";
-import { mcpServerNameFor, registerEditorServer } from "./forge/sessions.js";
+import { mcpServerNameFor, registerEditorServer, SessionPool } from "./forge/sessions.js";
+import { Router } from "./forge/router.js";
 import { createApplier, applyDecision, saveCheckpoints } from "./review/apply.js";
 import { createReviewController } from "./review/controller.js";
+import { registerInlineEdit } from "./inline/inlineEdit.js";
+import inlineAgent from "../../../agents/co4fe3-inline.agent.json";
+import coderAgent from "../../../agents/co4fe3-coder.agent.json";
 
 // Wiring only (rule 10). Each workflow adds its lines to activate(); nothing slow is awaited here (< 150 ms).
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
@@ -16,7 +20,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const status = new StatusItems();                                                              // 02 status.ts
   ctx.subscriptions.push(status);
   const host = createEditorHost(ctx, out);                                                       // 02 host/editorHost.ts
-  const client = makeClient(cfg().trueforge.url);                                                // 02 agent-core forge/client.ts
+  // The client re-reads the URL from settings, so a change applies without a reload (P8).
+  let clientUrl = cfg().trueforge.url;
+  let client = makeClient(clientUrl);                                                            // 02 agent-core forge/client.ts
+  const getClient = (): typeof client => {
+    const u = cfg().trueforge.url;
+    if (u !== clientUrl) { clientUrl = u; client = makeClient(u); }
+    return client;
+  };
   const checkpoints = new CheckpointLog();                                                       // 03 agent-core review/checkpoints.ts
   const persist = (): void => {
     saveCheckpoints(ctx.storageUri, JSON.stringify(checkpoints.toJSON()));
@@ -36,8 +47,32 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   }), (l) => out.info(l));                                                                       // 02 binds 127.0.0.1:0 only
   ctx.subscriptions.push({ dispose: () => void mcp.close() });
   const serverName = mcpServerNameFor(host.root);                                                // 02 "co4fe3-ws-<8 hex>"
-  void registerEditorServer(client, serverName, mcp, status, out);                               // 02 retries with backoff; never awaited
+  void registerEditorServer(getClient, serverName, mcp, status, out);                          // 02 retries forever; never awaited
+  ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {                      // a URL change re-registers (P8)
+    if (e.affectsConfiguration("co4fe3.trueforge.url")) void registerEditorServer(getClient, serverName, mcp, status, out);
+  }));
   registerReviewCommands(ctx, { review, applier, checkpoints, out });                             // 03 commands
+
+  const sessions = new SessionPool(getClient, (mode, model) => buildSpec(                            // 04 pre-warmed sessions
+    (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec,
+    { model, editorServer: serverName, mode: "agent", crew: cfg().crew.enabled }));
+  const router = new Router(getClient, {                                                            // 04 one model; 08 adds fallback and stats
+    order: () => cfg().models.order,
+    take: (mode, model) => sessions.take(mode, model),
+    log: (l) => out.info(l),
+  });
+  registerInlineEdit(ctx, {                                                                      // 04 Task A
+    host, review, sessions, router, out,
+    status: { inline: (p) => status.inline(p), setTtft: (ms, m) => status.setTtft(ms, m) },
+    applyDecision: (p, d) => applyDecision(applier, p, d),
+    toastApplied: (p, dec, fresh) => {
+      const verdict = fresh.length ? `${fresh.length} new error${fresh.length === 1 ? "" : "s"}: ${fresh.slice(0, 3).map(renderProblem).join(" · ")}` : "No new errors.";
+      void vscode.window.showInformationMessage(`Applied ${dec.accepted.length} of ${p.hunks.length} hunks to ${p.path} · ${verdict}`, "Undo").then((pick) => {
+        if (pick === "Undo") void vscode.commands.executeCommand("co4fe3.undoLast");
+      });
+    },
+    index: () => null,   // workflow 06 wires the IndexStore
+  });
 }
 
 export function deactivate(): void {}

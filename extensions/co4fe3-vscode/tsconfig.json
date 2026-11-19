@@ -1,1 +1,1 @@
-{ "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node", "vscode", "mocha"] }, "include": ["src", "test"] }
+{ "extends": "../../tsconfig.base.json", "compilerOptions": { "types": ["node", "vscode", "mocha"], "resolveJsonModule": true }, "include": ["src", "test"] }

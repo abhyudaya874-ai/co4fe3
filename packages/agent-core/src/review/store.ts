@@ -26,6 +26,9 @@ export class ReviewStore {
 
   get(key: string): Proposal | undefined { return this.proposals.get(key); }
 
+  /** Every staged proposal, oldest first (the newest is the one just opened). */
+  all(): Proposal[] { return [...this.proposals.values()]; }
+
   onChange(fn: (key: string) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
