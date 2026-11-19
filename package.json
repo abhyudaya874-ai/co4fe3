@@ -1,0 +1,30 @@
+{
+  "name": "co4fe3",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "extensions/*"
+  ],
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "trueforge": "npx --yes @truefoundry/trueforge@0.185.1",
+    "setup:trueforge": "node scripts/setup-trueforge.mjs",
+    "bench:latency": "node scripts/bench-latency.mjs",
+    "typecheck": "tsc -p packages/agent-core && tsc -p extensions/co4fe3-vscode && tsc -p extensions/co4fe3-vscode/webview && tsc -p test",
+    "build": "npm run build -w co4fe3-vscode",
+    "verify": "node scripts/verify.mjs",
+    "verify:fast": "node scripts/verify.mjs --fast",
+    "verify:live": "node scripts/verify.mjs --live"
+  },
+  "devDependencies": {
+    "@fast-check/vitest": "0.5.0",
+    "@types/node": "22.20.5",
+    "fast-check": "4.10.3",
+    "typescript": "7.0.2",
+    "vitest": "5.1.1"
+  }
+}

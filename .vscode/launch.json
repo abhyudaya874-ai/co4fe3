@@ -1,0 +1,8 @@
+{ "version": "0.2.0", "configurations": [
+  { "name": "Run co4fe3 on flask", "type": "extensionHost", "request": "launch", "preLaunchTask": "npm: build",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}/extensions/co4fe3-vscode", "${workspaceFolder}/.cache/flask"],
+    "outFiles": ["${workspaceFolder}/extensions/co4fe3-vscode/out/**/*.cjs"] },
+  { "name": "Run co4fe3 on minipkg", "type": "extensionHost", "request": "launch", "preLaunchTask": "npm: build",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}/extensions/co4fe3-vscode", "${workspaceFolder}/test/fixtures/minipkg"],
+    "outFiles": ["${workspaceFolder}/extensions/co4fe3-vscode/out/**/*.cjs"] }
+] }
