@@ -1,0 +1,61 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Grep(**)",
+      "Glob(**)",
+      "Exec(git status)",
+      "Exec(git diff)",
+      "Exec(git log)",
+      "Exec(git add)",
+      "Exec(git commit)",
+      "Exec(git stash)",
+      "Exec(git show)",
+      "Exec(npm run)",
+      "Exec(npm ci)",
+      "Exec(npm view)",
+      "Exec(npx tsc)",
+      "Exec(npx vitest)",
+      "Exec(npx vscode-test)",
+      "Exec(node scripts/)",
+      "Exec(curl -s)",
+      "Exec(rg)",
+      "Exec(ls)",
+      "Exec(cat)",
+      "Exec(sed -n)",
+      "Exec(df -h)"
+    ],
+    "ask": [
+      "Edit(scripts/check-invariants.mjs)",
+      "Edit(scripts/verify.mjs)",
+      "Edit(scripts/hooks/*)",
+      "Edit(.devin/config.json)",
+      "Edit(.devin/hooks.v1.json)",
+      "Edit(.devin/rules/*)",
+      "Exec(npm install)",
+      "Exec(npm i)",
+      "Exec(npm uninstall)",
+      "Exec(git push)",
+      "Exec(git rebase)",
+      "Exec(git reset)",
+      "Exec(pip install)",
+      "Read(.env*)",
+      "Fetch(*)"
+    ],
+    "deny": [
+      "Read(**/*.pem)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+      "Write(.git/**)",
+      "Write(node_modules/**)",
+      "Write(.env)",
+      "Exec(sudo)",
+      "Exec(rm -rf /)",
+      "Exec(rm -rf ~)",
+      "Exec(git push --force)",
+      "Exec(git push -f)",
+      "Exec(npm publish)",
+      "Exec(npx @vscode/vsce publish)"
+    ]
+  }
+}

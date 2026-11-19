@@ -1,0 +1,52 @@
+{
+  "$comment": "Copy to config/providers.json (gitignored), then run `npm run setup:trueforge`. Every ${NAME} is replaced from the environment at run time and never written to disk. Shapes follow @truefoundry/trueforge-sdk ModelProvidersClient.createOrUpdate (TS SDK, camelCase). Only `providers` are registered; move an entry from `alternatives` into `providers` to use it. contextLength / maxOutputTokens are PLACEHOLDERS: check each model card (workflow 08). Base URLs: NIM and OpenRouter from UltraPals lib/integrations/chat.ts, OmniRoute and freellmapi from their READMEs, Ollama's OpenAI-compatible endpoint.",
+  "providers": [
+    {
+      "type": "custom",
+      "name": "nvidia-nim",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "auth": { "apiKey": "${NVIDIA_API_KEY}" },
+      "models": [
+        { "name": "nemotron-super", "modelId": "nvidia/nemotron-3.5-super-vl-120b-a12b", "properties": { "contextLength": 131072, "maxOutputTokens": 8192 } },
+        { "name": "nemotron-ultra", "modelId": "nvidia/nemotron-3-ultra-550b-a55b", "properties": { "contextLength": 131072, "maxOutputTokens": 8192 } }
+      ]
+    },
+    {
+      "type": "google-gemini",
+      "auth": { "apiKey": "${GEMINI_API_KEY}" },
+      "models": [
+        { "name": "gemini-flash-lite", "modelId": "gemini-3.5-flash-lite", "properties": { "contextLength": 1048576, "maxOutputTokens": 8192 } }
+      ]
+    }
+  ],
+  "order": ["nvidia-nim/nemotron-super", "google-gemini/gemini-flash-lite"],
+  "alternatives": [
+    {
+      "type": "custom",
+      "name": "openrouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "auth": { "apiKey": "${OPENROUTER_API_KEY}" },
+      "models": [{ "name": "gemma-free", "modelId": "google/gemma-4-31b-it:free", "properties": { "contextLength": 131072 } }]
+    },
+    {
+      "type": "custom",
+      "name": "omniroute",
+      "baseUrl": "http://localhost:20128/v1",
+      "auth": { "apiKey": "${OMNIROUTE_KEY}" },
+      "models": [{ "name": "auto", "modelId": "auto", "properties": {} }]
+    },
+    {
+      "type": "custom",
+      "name": "freellmapi",
+      "baseUrl": "http://localhost:3001/v1",
+      "auth": { "apiKey": "${FREELLMAPI_KEY}" },
+      "models": [{ "name": "auto", "modelId": "auto", "properties": {} }]
+    },
+    {
+      "type": "custom",
+      "name": "ollama",
+      "baseUrl": "http://localhost:11434/v1",
+      "models": [{ "name": "qwen-coder-7b", "modelId": "qwen2.5-coder:7b", "properties": { "contextLength": 32768 } }]
+    }
+  ]
+}
