@@ -79,5 +79,6 @@ not in the README.
 
 ## Exit check
 
-- The secrets audit is empty; `npm run verify` is green in `/tmp/cc`; the README path reaches an inline edit.
+- The secrets audit is empty; `npm run verify` is green in `/tmp/cc` with no `[verify] pending:` line; the README
+  path reaches an inline edit.
 - Commit: `docs: judge-ready README, example configs and agent definitions`

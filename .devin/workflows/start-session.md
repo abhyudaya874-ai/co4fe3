@@ -19,6 +19,8 @@ date "+%a %d %b %H:%M %Z"
 ```
 
 Then read, in this order: `AGENTS.md`, `docs/CODEMAP.md` (just the headings), the newest `docs/progress/NN-*.md`.
+A progress file whose last line starts with `EXIT: passed` is finished, so NEXT is workflow NN+1, step 1. Otherwise
+NEXT is that workflow's first unchecked automated exit item. No progress files at all: NEXT is `00-bootstrap`, step 1.
 If the next workflow touches rules 30, 40, 50, 60, 70 or 85, also read the matching section of `docs/study/v3code.md`.
 
 ## Report (fill in all 7 lines)

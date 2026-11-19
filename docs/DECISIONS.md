@@ -10,10 +10,14 @@ point is simply "from scratch", the git history is short and readable, and the c
 was rejected: the brief asks for a VS Code extension, V3Code is a whole editor whose first build takes hours, and it
 keeps its own agent loop, which TrueForge must replace.
 
-**D2 Exact pins.** The TrueForge server is pinned in `npm run trueforge` (`<PINNED>`, filled in at bootstrap).
-`@truefoundry/trueforge-sdk` is `0.185.0`, the release that introduced paused turns. `@modelcontextprotocol/sdk` is
-`1.x` (exact). zod follows the MCP SDK's peer dependency. `diff`, `vitest`, `fast-check`, `esbuild`, `vite`, `react`
-and `@vscode/test-cli` are pinned exactly at install time. The full versions list is written here at bootstrap.
+**D2 Exact pins.** The TrueForge server is pinned in `npm run trueforge` at `0.185.1` (wherever a rule says
+`<PINNED>`). `@truefoundry/trueforge-sdk` is `0.185.0`, the release that introduced paused turns. The rest were
+installed together in a bootstrap dry run on 19 Nov 2026 and pass the gate together: `@modelcontextprotocol/sdk`
+1.32.2, zod 4.6.7 (inside the MCP SDK's peer range), diff 9.0.0 (ships its own types), typescript 7.0.2,
+vitest 5.1.1, fast-check 4.10.3, @fast-check/vitest 0.5.0, @types/node 22.20.5, esbuild 0.28.2, vite 8.3.8,
+@vitejs/plugin-react 6.3.0, react and react-dom 19.3.1, @types/react and @types/react-dom 19.3.0, @types/vscode
+1.90.0 (matches `engines.vscode`), @vscode/test-cli 0.0.15, @vscode/test-electron 3.1.0, @types/mocha 10.0.10,
+@vscode/vsce 4.1.1. Workflow 00 installs all of them, so no later workflow picks a version.
 
 **D3 Inline-spec sessions.** A named agent was the alternative, but named sessions reject agent updates, so the model
 could not be switched for fallback. The agent JSON files are written in the TS SDK's camelCase, so they go straight

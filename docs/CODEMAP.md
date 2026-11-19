@@ -87,7 +87,8 @@ The "V3Code" column names the idea a file reimplements (`docs/study/v3code.md`).
 
 ## web: `extensions/co4fe3-vscode/webview/src`
 
-`main.tsx` (mounts the app and owns `acquireVsCodeApi()`) · `App.tsx` (a `useReducer` over `applyPanelEvent`, with
+`main.tsx` (mounts the app and owns `acquireVsCodeApi()`) · `main.css` · `vite-env.d.ts` (Vite client types, so
+CSS imports typecheck under TS 7) · `App.tsx` (a `useReducer` over `applyPanelEvent`, with
 batch apply) · `md.tsx` (a tiny safe markdown renderer, React elements only) · `components/`: `Header` (mode chip
 Agent/Ask/Plan, model picker), `Transcript`, `UserBubble`, `TextRow`, `Thoughts`, `ToolCard`, `MemberRow` (status
 and profile chips, blocked reason), `MessageBubble`, `PackCard` (per-channel ranks), `BoardCard`, `DiffCard`

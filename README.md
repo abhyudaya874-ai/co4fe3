@@ -20,9 +20,10 @@ bash scripts/hooks/test-hooks.sh      # the hooks guard every edit; this proves 
 node scripts/check-invariants.mjs     # the mechanical laws; passes on the bare pack
 ```
 
-Then open `/home/de3p/co4fe3` in Devin and paste `MASTER_PROMPT.md`. Devin runs `/start-session`, then the
-workflows in numeric order, one per message. Keep `/home/de3p/V3Code` where it is: the rules read it, and the hooks
-refuse writes into it.
+Then do the five steps in `MASTER_PROMPT.md` Part 1 (clean tree, `.env`, TrueForge in a terminal), open
+`/home/de3p/co4fe3` in Devin and paste Part 2. Devin runs `/start-session`, then the workflows in numeric order
+without waiting between them, and writes a report and a `docs/progress/NN-*.md` file after each one. Part 3 resumes a
+new session. Keep `/home/de3p/V3Code` where it is: the rules read it, and the hooks refuse writes into it.
 
 ## What the product is (one screen)
 

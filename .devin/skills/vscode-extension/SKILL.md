@@ -94,16 +94,20 @@ If you cannot find it there, it does not exist in our minimum version.
 
 ## Builds
 
-`esbuild.mjs` (the extension and its e2e tests, CJS, `vscode` external):
+`esbuild.mjs` (the extension and, once they exist, its e2e tests; CJS, `vscode` external). The test list is read
+from the directory, so the build also works before workflow 04 adds the first e2e test:
 
 ```js
+// Bundles the extension (CJS, vscode external) and, when they exist, its e2e tests.
 import { build, context } from "esbuild";
+import { existsSync, readdirSync } from "node:fs";
 const base = { bundle: true, platform: "node", format: "cjs", target: "node20", sourcemap: true, external: ["vscode"], logLevel: "info" };
 const ext = { ...base, entryPoints: ["src/extension.ts"], outfile: "out/extension.cjs" };
+const tests = existsSync("test") ? readdirSync("test").filter((f) => f.endsWith(".test.ts")).map((f) => `test/${f}`) : [];
 if (process.argv.includes("--watch")) await (await context(ext)).watch();
 else {
   await build(ext);
-  await build({ ...base, entryPoints: ["test/**/*.test.ts"], outdir: "out/test", external: ["vscode", "mocha"] });
+  if (tests.length) await build({ ...base, entryPoints: tests, outdir: "out/test", external: ["vscode", "mocha"] });
 }
 ```
 

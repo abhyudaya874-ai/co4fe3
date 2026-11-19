@@ -106,7 +106,9 @@ if (section === "fail") {   // bad key, then unreachable URL: record turn.done.s
 }
 ```
 
-The `fake` section points a custom provider at `test/fakes/fake-openai.ts` (run through `npx tsx`). It then prints
+The `fake` section points a custom provider at `test/fakes/fake-openai.ts`, loaded with
+`await import("../test/fakes/fake-openai.ts")`. Node strips the types itself (default since 22.18; this machine runs
+26.7), so do not add tsx. It then prints
 `requests[0].path`, `Object.keys(requests[0].body)` and `requests[0].body.tools.map(t => t.function.name)`. That shows
 the path TrueForge calls, how it names our MCP tools, and the schema of `create_sub_agent` when
 `dynamicSubAgents` is on.
@@ -131,5 +133,11 @@ Row 5's strings go straight into the `classifyFailure` test table (workflow 08).
 
 - `docs/progress/01-spike.md` has all 8 rows, with raw output.
 - Rule 20 is corrected wherever reality differed (or the file says "matches rule 20").
-- `test/integration/roundtrip.test.ts` and `test/integration/mcp.test.ts` exist and pass under `npm run verify`.
+- `test/fixtures/minipkg` exists with the layout in rule 80 (our own small Python code; never copied from flask).
+- `test/integration/global-setup.ts` and a first `harness.ts` exist (rule 80). In this workflow the harness's MCP
+  server is test-local: one `read_file` tool that reads the temp copy of minipkg. Workflow 02 swaps in
+  `createEditorMcpServer` and the full tool list.
+- `test/integration/roundtrip.test.ts` and `test/integration/mcp.test.ts` exist and pass under `npm run verify`
+  (the integration stage runs as soon as `global-setup.ts` and one test exist). Once `docs/progress/01-spike.md`
+  ends with `EXIT: passed`, verify requires the stage for good (rule 80, pending stages).
 - Commit: `forge: spike TrueForge round trip, approval, cancel, failure strings`

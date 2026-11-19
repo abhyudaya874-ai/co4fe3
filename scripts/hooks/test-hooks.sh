@@ -14,6 +14,9 @@ t() {
 }
 w() { jq -cn --arg p "$1" --arg c "$2" '{tool_input:{file_path:$p, content:$c}}'; }   # write payload, JSON-escaped by jq
 x() { jq -cn --arg c "$1" '{tool_input:{command:$c}}'; }                              # exec payload
+# A key-shaped test value, assembled at run time so this tracked file never holds a key-shaped string
+# (check-invariants scans every tracked file for keys, law 7).
+FAKE_KEY="nvapi-$(printf 'abcdefghijklm')nopqrstuvwxyz0123"
 
 # --- guard-write: architecture laws ---
 t 2 "core imports vscode"               guard-write.sh "$(w packages/agent-core/src/x.ts 'import * as vscode from "vscode";')"
@@ -28,7 +31,7 @@ t 2 "provider host in extension"        guard-write.sh "$(w extensions/co4fe3-vs
 t 2 "provider SDK in core"              guard-write.sh "$(w packages/agent-core/src/x.ts 'import OpenAI from "openai";')"
 t 2 "innerHTML in webview"              guard-write.sh "$(w extensions/co4fe3-vscode/webview/src/App.tsx '<div dangerouslySetInnerHTML={{__html: t}} />')"
 # --- guard-write: secrets ---
-t 2 "real key in a file"                guard-write.sh "$(w config/providers.json '"apiKey": "nvapi-abcdefghijklmnopqrstuvwxyz0123"')"
+t 2 "real key in a file"                guard-write.sh "$(w config/providers.json "\"apiKey\": \"$FAKE_KEY\"")"
 t 0 "placeholder key"                   guard-write.sh "$(w config/providers.json '"apiKey": "${NVIDIA_API_KEY}"')"
 # --- guard-write: rule 05 (V3Code is a read-only reference; no copied code) ---
 t 2 "write into V3Code"                 guard-write.sh "$(w /home/de3p/V3Code/src/vs/workbench/contrib/void/common/x.ts 'export const a = 1;')"
@@ -48,7 +51,7 @@ t 2 "force push"                        guard-exec.sh "$(x 'git push --force ori
 t 2 "curl a provider"                   guard-exec.sh "$(x 'curl -s https://integrate.api.nvidia.com/v1/models')"
 t 0 "grep for a provider host"          guard-exec.sh "$(x 'grep -rn integrate.api.nvidia.com packages')"
 t 2 "trueforge @latest"                 guard-exec.sh "$(x 'npx @truefoundry/trueforge@latest')"
-t 2 "key on a command line"             guard-exec.sh "$(x 'NVIDIA_API_KEY=nvapi-abcdefghijklmnopqrstuvwxyz0123 node x.mjs')"
+t 2 "key on a command line"             guard-exec.sh "$(x "NVIDIA_API_KEY=$FAKE_KEY node x.mjs")"
 t 2 "publish"                           guard-exec.sh "$(x 'npx @vscode/vsce publish')"
 t 2 "build V3Code"                      guard-exec.sh "$(x 'cd /home/de3p/V3Code && npm ci')"
 t 0 "read V3Code"                       guard-exec.sh "$(x 'rg -n availableTools /home/de3p/V3Code/src/vs/workbench/contrib/void/common/prompt/prompts.ts')"

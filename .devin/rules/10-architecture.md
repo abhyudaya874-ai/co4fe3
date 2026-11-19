@@ -116,23 +116,30 @@ export type ApplyResult = { ok: true; checkpointId: string } | { ok: false; why:
 
 ## Activation sequence (`extension.ts` does this and nothing else)
 
+This is the end state. `extension.ts` grows one workflow at a time: the number in each comment is the workflow that
+adds the line (00 ships only the output channel). Every name and signature below is CODEMAP's. Where this block
+writes `/* wNN */`, the arguments are defined by workflow NN; read them there, never guess them.
+
 ```ts
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
-  const out = vscode.window.createOutputChannel("co4fe3", { log: true });
-  const cfg = readConfig();                                   // co4fe3.* settings, typed
-  const host = createEditorHost(ctx, out);                    // host/editorHost.ts
-  const applier = createApplier(ctx, out);                    // review/apply.ts  (the only writer)
-  const review = createReviewController(ctx, applier);        // diff editor + CodeLens + decisions
-  const client = makeClient(cfg.trueforgeUrl);                // agent-core/forge/client.ts
-  const mcp = await startMcpHttp({ host, applier, review: review.store, out }); // 127.0.0.1:<port>, random token
+  const out = vscode.window.createOutputChannel("co4fe3", { log: true });                      // 00
+  const cfg = (): Config => readConfig();                                                        // 02 config.ts (re-read: settings change)
+  const status = new StatusItems(/* w02 */);                                                     // 02 status.ts
+  const host = createEditorHost(ctx, out);                                                       // 02 host/editorHost.ts
+  const client = makeClient(cfg().trueforge.url);                                                // 02 agent-core forge/client.ts
+  const checkpoints = new CheckpointLog(/* w03 */);                                              // 03 agent-core review/checkpoints.ts
+  const applier = createApplier(host.root, checkpoints, () => { /* w03: persist the log, refresh status.undo */ }); // 03 the only writer
+  const review = createReviewController(ctx, { applier /* + w03 deps */ });                      // 03 diff editor + CodeLens + decisions
+  const mcp = await startMcpHttp(() => createEditorMcpServer({ host, applier, review: review.store /* + McpDeps, w02 */ }), (l) => out.info(l)); // 02 binds 127.0.0.1:0 only
   ctx.subscriptions.push({ dispose: () => void mcp.close() });
-  const serverName = mcpServerNameFor(host.root);             // "co4fe3-ws-<8 hex>"
-  void registerEditorServer(client, serverName, mcp).catch((e) => out.error(String(e))); // never blocks activation
-  const router = createRouter(ctx, client, cfg);              // model order, fallback, latency stats
-  const sessions = createSessionPool(client, router, serverName); // pre-warmed sessions
-  registerInlineEdit(ctx, { host, review, sessions, router, out });
-  registerPanel(ctx, { host, review, sessions, router, client, out });
-  void indexWorkspaceInBackground(host, out);                 // repo map; chunked, never blocks
+  const serverName = mcpServerNameFor(host.root);                                                // 02 "co4fe3-ws-<8 hex>"
+  void registerEditorServer(client, serverName, mcp, status.trueforge);                          // 02 retries with backoff; never awaited
+  const sessions = new SessionPool(client, (mode, model) => buildSpec(/* w04 inline, w05 coder */)); // 04 pre-warmed sessions
+  const router = new Router(ctx, client, cfg, sessions, out);                                    // 04 one model; 08 adds fallback and stats
+  registerInlineEdit(ctx, { host, review, sessions, router, out /* + w04 InlineDeps */ });       // 04 Task A
+  ctx.subscriptions.push(vscode.window.registerWebviewViewProvider(PanelView.id, new PanelView(/* w05 */), { webviewOptions: { retainContextWhenHidden: true } })); // 05
+  const index = new IndexStore();                                                                // 06 context/indexer.ts
+  void indexWorkspaceInBackground(host, index, out);                                             // 06 chunked, never awaited
 }
 ```
 

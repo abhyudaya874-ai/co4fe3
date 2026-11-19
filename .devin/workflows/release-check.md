@@ -33,7 +33,7 @@ evidence: command output or a timestamp in the video.
 
 ## Safety laws
 
-- [ ] `npm run verify` is green on the commit being submitted.
+- [ ] `npm run verify` is green on the commit being submitted, and its output has no `[verify] pending:` line.
 - [ ] The secrets audit (workflow 12) printed nothing.
 - [ ] `.env` and `config/providers.json` are not tracked (`git ls-files | grep -E "^\.env$|providers\.json$"` is empty).
 

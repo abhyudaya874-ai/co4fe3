@@ -96,10 +96,26 @@ export function toolName(body: ChatBody, bare: string): string {
   return hit;
 }
 export const lastRole = (b: ChatBody): string => b.messages.at(-1)?.role ?? "";
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Splits on code points (Array.from), so a surrogate pair is never cut in half. */
+function splitInto(text: string, parts: number): string[] {
+  const chars = Array.from(text), size = Math.max(1, Math.ceil(chars.length / Math.max(1, parts)));
+  const out: string[] = [];
+  for (let i = 0; i < chars.length; i += size) out.push(chars.slice(i, i + size).join(""));
+  return out.length ? out : [""];
+}
 ```
 
-(`readJson`, `json`, `sleep` and `splitInto` are 10 lines in the same file. `splitInto` must cut on character
-boundaries, never in the middle of a surrogate pair.)
+This file typechecks as written under the workflow 00 configs (dry run, 19 Nov). Workflow 00 copies it whole.
 
 A script is usually a function of the request, so it survives TrueForge adding messages:
 
@@ -177,25 +193,24 @@ We follow the same rule with vitest:
 
 ## `npm run verify` (`scripts/verify.mjs`)
 
-```js
-const fast = process.argv.includes("--fast"), live = process.argv.includes("--live");
-const stages = [
-  ["invariants", "node scripts/check-invariants.mjs"],
-  ["hooks", "bash scripts/hooks/test-hooks.sh"],          // the guards themselves are tested (needs jq)
-  ["typecheck", "npm run typecheck"],
-  ["unit", "npx vitest run --project unit"],
-  ...(fast ? [] : [["perf", "npx vitest run --project perf"], ["integration", "npx vitest run --project integration"], ["build", "npm run build -w extensions/co4fe3-vscode"], ["e2e", "npx vscode-test"]]),
-  ...(live ? [["bench", "node scripts/bench-latency.mjs"], ["smoke", "node scripts/smoke-live.mjs"]] : []),
-];
-for (const [name, cmd] of stages) {
-  const t = Date.now();
-  const r = spawnSync(cmd, { shell: true, stdio: "inherit" });
-  console.log(`[verify] ${name} ${r.status === 0 ? "ok" : "FAILED"} (${((Date.now() - t) / 1000).toFixed(1)} s)`);
-  if (r.status !== 0) process.exit(r.status ?? 1);
-}
-if (!fast) { mkdirSync(".devin", { recursive: true }); writeFileSync(".devin/.last-verify", new Date().toISOString() + "\n"); }
-console.log(`\nverify${fast ? " (fast)" : live ? " (live)" : ""}: all stages passed`);
-```
+The script ships in the pack; read it rather than a copy here. Its stages, in order:
+
+| Stage | Command | In | Pending until |
+|---|---|---|---|
+| invariants | `node scripts/check-invariants.mjs` | fast, full | never pending |
+| hooks | `bash scripts/hooks/test-hooks.sh` (needs jq) | fast, full | never pending |
+| typecheck | `npm run typecheck` (4 projects) | fast, full | never pending |
+| unit | `npx vitest run --project unit` | fast, full | never pending |
+| perf | `npx vitest run --project perf` | full | workflow 09 passes its exit check |
+| integration | `npx vitest run --project integration` | full | workflow 01 passes its exit check |
+| build | `npm run build` (esbuild + Vite) | full | never pending |
+| e2e | `npx vscode-test` | full | workflow 04 passes its exit check |
+| bench, smoke | `scripts/bench-latency.mjs`, `scripts/smoke-live.mjs` | live | never pending |
+
+A stage runs as soon as its inputs exist. With no inputs it prints `[verify] <stage> pending` and does not fail, but
+only until its workflow's `docs/progress/NN-*.md` has a line starting `EXIT: passed`. After that, missing inputs
+fail the gate. Only the full run writes `.devin/.last-verify` (with `pending=…` when any stage was pending), and only
+that stamp unlocks `git commit`. Workflow 12 needs zero pending.
 
 `.vscode-test.mjs` (root):
 

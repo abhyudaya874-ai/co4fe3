@@ -187,6 +187,8 @@ keyboard and from the notification.
 
 ## Exit check
 
-- `inline.test.ts` green; the e2e `inline.test` green (the scripted fake model drives the same command).
+- `inline.test.ts` green; the e2e `inline.test` green (the scripted fake model drives the same command). The e2e
+  stage needs the root `.vscode-test.mjs` from rule 80 and `extensions/co4fe3-vscode/test/inline.test.ts`. It runs
+  as soon as both exist, and is required for good once `docs/progress/04-inline.md` ends with `EXIT: passed`.
 - Steps 1–7 pass on flask. `marks.line()` output for 3 runs is pasted into `docs/progress/04-inline.md`.
 - Commit: `inline: streamed inline edit with per-hunk review and undo`
