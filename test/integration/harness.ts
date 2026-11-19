@@ -1,17 +1,18 @@
 // The integration harness (rule 80): real TrueForge (from global-setup) + fake model + real MCP server + temp workspace.
-// Workflow 01's MCP server is test-local: one read_file tool. Workflow 02 swaps in createEditorMcpServer.
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+// Workflow 02: the harness now serves createEditorMcpServer (the full tool list) over startMcpHttp.
+import type { IncomingMessage } from "node:http";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrueForge } from "@truefoundry/trueforge-sdk";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
 import { inject } from "vitest";
 import { startFakeOpenAI, toolName, type Script } from "../fakes/fake-openai.js";
 import { runTurn, allow, reply, type TurnOutcome, type TfEvent, type EventIndex, type PendingCall } from "../../packages/agent-core/src/forge/turn.js";
+import { createEditorMcpServer, type McpDeps } from "../../packages/agent-core/src/mcp/server.js";
+import { startMcpHttp, type McpHttp } from "../../packages/agent-core/src/mcp/http.js";
+import { ReviewStore } from "../../packages/agent-core/src/review/store.js";
+import { Board } from "../../packages/agent-core/src/crew/board.js";
+import { TurnPolicy } from "../../packages/agent-core/src/runtime/policy.js";
 import type { Applier, EditorHost, FileChange } from "../../packages/agent-core/src/host.js";
 
 declare module "vitest" {
@@ -73,40 +74,26 @@ function testApplier(root: string): Applier & { last(): Checkpoint | undefined; 
   };
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8");
-  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+async function readJson(req: IncomingMessage, max: number): Promise<unknown> {
+  const chunks: Buffer[] = []; let n = 0;
+  for await (const c of req as AsyncIterable<Buffer>) { n += c.length; if (n > max) throw new Error("request too large"); chunks.push(c); }
+  return n ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 }
 
-/** Workflow 01's test-local MCP server: one read_file tool over loopback with a bearer token. */
-async function startTestMcp(host: EditorHost): Promise<{ url: string; token: string; close(): Promise<void> }> {
-  const token = randomBytes(18).toString("base64url");
-  const http = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.headers.authorization !== `Bearer ${token}`) return void res.writeHead(401).end();
-    if (req.method !== "POST") return void res.writeHead(405).end();
-    const body = await readJson(req);
-    const server = new McpServer({ name: "co4fe3-test", version: "0.1.0" });
-    server.registerTool("read_file", {
-      description: "Read a text file in the workspace (workspace-relative path).",
-      inputSchema: { path: z.string().min(1), offset: z.number().int().min(1).default(1), limit: z.number().int().min(1).max(800).default(400) },
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    }, async ({ path, offset, limit }) => {
-      const text = await host.readText(path);
-      if (text === null) return { content: [{ type: "text", text: `${path} does not exist.` }], isError: true };
-      const lines = text.split(/(?<=\n)/);
-      const end = Math.min(lines.length, offset - 1 + limit);
-      return { content: [{ type: "text", text: `${path} (lines ${offset}-${end} of ${lines.length})\n${lines.slice(offset - 1, end).join("")}` }] };
-    });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on("close", () => { void transport.close(); void server.close(); });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, body);
-  });
-  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
-  const { port } = http.address() as { port: number };
-  return { url: `http://127.0.0.1:${port}/mcp`, token, close: () => new Promise((r) => { http.closeAllConnections(); http.close(() => r()); }) };
+/** The editor MCP server over the harness's NodeTestHost + TestApplier (the real createEditorMcpServer since workflow 02). */
+async function startTestMcp(host: EditorHost, applier: Applier): Promise<McpHttp> {
+  const review = new ReviewStore();
+  const board = new Board();
+  const policy = new TurnPolicy("test-turn");
+  const deps: McpDeps = {
+    host, applier, review, board,
+    index: () => null,
+    instructions: async () => ({ items: [], sources: [] }),
+    turn: () => ({ id: "test-turn", signal: new AbortController().signal, policy }),
+    changes: () => [],
+    log: () => undefined,
+  };
+  return await startMcpHttp(() => createEditorMcpServer(deps), () => undefined);
 }
 
 let harnessN = 0;
@@ -125,7 +112,7 @@ export async function startHarness(script: Script): Promise<Harness> {
   await cp(join(import.meta.dirname ?? ".", "../fixtures/minipkg"), root, { recursive: true });
   const host = nodeTestHost(root);
   const applier = testApplier(root);
-  const mcp = await startTestMcp(host);
+  const mcp = await startTestMcp(host, applier);
   const mcpName = `co4fe3-test-${n}`;
   await client.settings.mcpServers.createOrUpdate({
     manifest: { type: "remote", name: mcpName, url: mcp.url, description: "integration test editor tools", auth: { type: "header", headers: { Authorization: `Bearer ${mcp.token}` } } },

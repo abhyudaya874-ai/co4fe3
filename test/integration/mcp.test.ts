@@ -1,13 +1,14 @@
 import { it, expect } from "vitest";
+import { TOOLS } from "../../packages/agent-core/src/runtime/modes.js";
 import { startHarness, toolName } from "./harness.js";
 
-it("TrueForge lists our tools, the model's read_file reaches our handler, and the result reaches the model", async () => {
+it("TrueForge lists all 11 editor tools in TOOLS order, and a scripted read_file reaches our handler", async () => {
   const h = await startHarness((body, n) => n === 0
     ? { toolCalls: [{ name: toolName(body, "read_file"), args: { path: "src/minipkg/__init__.py" } }] }
     : { text: "Done." });
   const tools = await h.client.mcpServers.listTools(h.mcpName, { timeoutInSeconds: 15, maxRetries: 0 });
-  const names = JSON.stringify(tools);
-  expect(names).toContain("read_file");
+  const names = (tools as { data: { name: string }[] }).data.map((t) => t.name);
+  expect(names).toEqual([...TOOLS]);   // read-first order, rule 60
   const out = await h.turn("Read src/minipkg/__init__.py.");
   expect(out.status).toBe("done");
   // The tool result reached the model: a later request's messages contain our file text.
