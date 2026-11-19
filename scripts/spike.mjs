@@ -75,8 +75,8 @@ if (section === "tool" || section === "gate") {
 if (section === "cancel") await turn({ ...base, instructions: "Write long answers." }, "Write 400 words about rivers.", { cancelAfterDeltas: 3 });
 if (section === "fail") {   // bad key, then unreachable URL: record turn.done.state.message and the time it took
   for (const [name, baseUrl, apiKey] of [["spike-badkey", "https://integrate.api.nvidia.com/v1", "nvapi-invalid"], ["spike-down", "http://127.0.0.1:9/v1", "x"]]) {
-    await client.settings.modelProviders.createOrUpdate({ manifest: { type: "custom", name, baseUrl, auth: { apiKey }, models: [{ name: "m", modelId: "nvidia/nemotron-3.5-super-vl-120b-a12b", properties: {} }] } });
-    const { e } = await turn({ ...base, model: { name: `${name}/m` } }, "hi");
+    await client.settings.modelProviders.createOrUpdate({ manifest: { type: "custom", name, baseUrl, auth: { apiKey }, models: [{ name: "testmodel", modelId: "nvidia/nemotron-3.5-super-vl-120b-a12b", properties: {} }] } });
+    const { e } = await turn({ ...base, model: { name: `${name}/testmodel` } }, "hi");
     console.log(ms(), "FAILURE STRING:", JSON.stringify(e.state));
   }
 }
@@ -94,6 +94,8 @@ if (section === "fake") {
   for (const r of fake.requests) {
     console.log("REQ", r.method, r.path, "keys:", r.body ? Object.keys(r.body).join(",") : "null");
     if (r.body?.tools) console.log("  tools:", r.body.tools.map((t) => t.function.name).join(", "));
+    const sub = r.body?.tools?.find((t) => t.function.name === "create_sub_agent");
+    if (sub) console.log("  create_sub_agent schema:", JSON.stringify(sub.function.parameters ?? sub.function).slice(0, 1200));
   }
   await fake.close();
 }

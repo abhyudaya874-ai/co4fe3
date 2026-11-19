@@ -55,7 +55,7 @@ const RULES: [FailKind, RegExp, number, boolean][] = [
   ["auth", /\b(401|403)\b|unauthori[sz]ed|invalid[^.]{0,30}(api[ _-]?key|token|credential)|permission denied/i, 600_000, false],
   ["not_found", /\b404\b|model[^.]{0,40}(not found|does not exist)|unknown model/i, 600_000, false],
   ["rate", /\b429\b|rate.?limit|quota|resource.?exhausted|too many requests/i, 60_000, false],
-  ["unreachable", /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|getaddrinfo|fetch failed|connect(ion)? refused|network error|socket hang up/i, 60_000, false],
+  ["unreachable", /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|getaddrinfo|fetch failed|connect(ion)? refused|network error|socket hang up|cannot connect/i, 60_000, false],
   ["context", /context.{0,20}(length|window)|maximum context|too many (input )?tokens/i, 0, false],
   ["server", /\b5\d\d\b|overloaded|unavailable|bad gateway|internal server error/i, 30_000, true],
   ["stall", /stall|timed? ?out|ETIMEDOUT|deadline/i, 60_000, true],

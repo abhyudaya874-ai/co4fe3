@@ -24,8 +24,9 @@ before using it, then add it here in the same commit.
 "dependencies": { "@truefoundry/trueforge-sdk": "0.185.0" }     // exact. 0.185.0 changed the turn lifecycle (pauses).
 ```
 
-Local mode: one process, SQLite, no login, UI and API on `http://localhost:8790`. Keep it on localhost.
-Interactive API docs: `http://localhost:8790/api/v1/docs`. OpenAPI JSON: `/api/v1/openapi.json`.
+Local mode: one process, SQLite, no login, UI and API on `http://localhost:8790`. Keep it on localhost. **The server
+binds `::1` (IPv6 localhost) only: a client base URL of `127.0.0.1` is refused with "fetch failed". Always use
+`localhost`.** (Spike, 19 Nov.) Interactive API docs: `http://localhost:8790/api/v1/docs`. OpenAPI JSON: `/api/v1/openapi.json`.
 
 ## Client (`agent-core/src/forge/client.ts`)
 
@@ -231,3 +232,26 @@ await client.settings.modelProviders.createOrUpdate({ manifest: {
     (`toolsForMode`, rule 50 §1) as `enableTools`, so the model is never *shown* a gated tool. The mode tail in the
     instructions only explains why. A new mode applies to a new session (or `sessions.update` with a new inline spec),
     never mid-turn.
+16. **The SSRF guard blocks loopback outbound URLs.** TrueForge refuses to fetch `127.0.0.1`, `::1`, `localhost`
+    (dotless) and every private CIDR — which is exactly where our MCP server lives. Fix: start it with
+    `OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]'` (a JSON string array; `npm run trueforge` sets it).
+    Verified in the spike: without it, `modelProviders.createOrUpdate` and MCP registration fail with
+    `Outbound URL blocked for host "127.0.0.1"`. (Spike, 19 Nov.)
+17. **Provider and model names are validated.** `manifest.models[].name` must be 2–64 lowercase chars, start with a
+    letter, hyphens only inside. A 1-char name is a 400. (Spike, 19 Nov.)
+
+## Shapes verified in the spike (19 Nov 2026, against 0.185.1)
+
+- `models.list()` → `{ data: [{ name: "nvidia-nim/nemotron-super", modelId, provider: { name }, properties, warning? }] }`.
+- `mcpServers.listTools(name)` → `{ data: [{ name, description, inputSchema, annotations, execution: { taskSupport }, preload }] }`.
+- `toolInfo` of a preloaded MCP call: `{ type: "mcp", name, serverId, serverName }` (both ids present).
+- `mcp.initialize`: `{ mcpServers: [{ name, id, transportType: "streamable-http" }] }`.
+- `create_sub_agent` parameters: `{ name: string (minLength 1), input: string (minLength 1) }`, both required —
+  the lead names the member and writes the brief.
+- `ThreadCreatedEvent.title: string` exists; `AgentInfo` is `{ type: "dynamic", name, input: string, model? }`.
+- Failure strings (row 5 of `docs/progress/01-spike.md`): a bad key is
+  `turn.done{status:"error", message:"[Model Error] Request failed (403): Forbidden"}` (~1.1 s); an unreachable
+  base URL is `[Model Error] Cannot connect to API: bad port` (~1.2 s). Both arrive as `turn.done`, not as a thrown
+  SDK error. Rule 70's `classifyFailure` regexes are tested against these exact strings.
+- The wire format is snake_case (`max_tokens`, `dynamic_sub_agents`, `enable_tools`); TS is camelCase.
+- Default `contextManagement.largeToolResponse` is `{ enabled: true }` — always set it to `false` explicitly (trap 12).
