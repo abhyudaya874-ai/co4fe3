@@ -23,4 +23,5 @@ export * from "./instructions/load.js";
 export * from "./util/stable.js";
 export * from "./util/truncate.js";
 export * from "./util/jail.js";
+export * from "./util/queue.js";
 export * from "./util/abort.js";
