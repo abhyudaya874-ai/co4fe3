@@ -16,6 +16,8 @@ So: **never invent. Look up, copy, adapt, verify.**
    - TrueForge names are in rule 20, and anything else in `node_modules/@truefoundry/trueforge-sdk/dist/cjs/api/**/*.d.ts`.
    - VS Code names are in `node_modules/@types/vscode/index.d.ts`.
    - MCP names are in `node_modules/@modelcontextprotocol/sdk/dist/esm/server/*.d.ts`.
+   - Design questions ("how should X work?") are answered in `docs/study/v3code.md` first. V3Code shows the shape;
+     our CODEMAP gives the names. Never import or paste a V3Code name or file (rule 05).
    - If grep finds nothing, the name does not exist. Create it deliberately and add it to CODEMAP in the same commit.
 3. **Copy a pattern.** Find the recipe in `docs/PATTERNS.md` and adapt it. Do not design a new shape for an old problem.
 4. **Read the whole file before editing it.** A search hit out of context is a guess.
@@ -58,6 +60,8 @@ If you cannot fill `PATTERN`, you do not understand the task yet: run `/explore-
 |---|---|
 | tsc error mentions a name I do not recognise | grep CODEMAP, then the repo, then the `.d.ts`. Never add `any`. |
 | TrueForge behaves differently from rule 20 | Record the exact event sequence in `docs/progress/01-spike.md`, fix rule 20 **and** the code in the same commit. |
+| I am designing something the rules do not cover | Check `docs/study/v3code.md` §15 for how V3Code did it. Adopt or adapt its idea in our own code, and add a D19 line. |
+| A V3Code file has exactly the code I need | Close it. Write the idea as a test, then our own code. The hooks block pasted V3Code/Void headers. |
 | A test fails and I think the test is wrong | Re-read the rule it cites. The rule wins. If the rule is wrong, fix the rule first, in its own commit. |
 | I need a new dependency | Stop. Is it already in a `package.json`? If not, say why, its size and its licence, and ask. Pin it exactly. |
 | I want to refactor "while I'm here" | No. Write it in `docs/BACKLOG.md`. |

@@ -5,12 +5,19 @@ of refactoring "while you are here".
 
 ## After the Round 1 submission (Fri 20 Nov 23:59 IST)
 
-- **The co4fe3 app**: an agent-first desktop IDE on Code-OSS (or Theia) that reuses `packages/agent-core` unchanged.
-  An agent view sits first and the editor second, with a mode toggle, a titlebar model picker and a sessions list.
-  Start by shipping this extension as a built-in extension of the fork. Deferred because the first Code-OSS build
-  alone costs hours, and it scores nothing in Round 1.
-- **Tree-sitter symbols** (D7): better precision on decorators, nested code and more languages.
-- **Optional embeddings retrieval** as a third ranking signal, behind a setting. It needs a model that TrueForge can
+- **The co4fe3 app, on a V3Code fork.** Fork `github.com/HeavenFYouMissed/V3Code` (Apache-2.0, on Void and Code-OSS).
+  Rename it, because the V3Code name and logo are KandD Labs trademarks. Keep `LICENSE`, `LICENSE.txt`, `NOTICE.txt`
+  and every file header, and add our own NOTICE entry. Then:
+  - replace its native agent loop with TrueForge, reusing `packages/agent-core` unchanged;
+  - ship this extension as a built-in extension first;
+  - then move the panel into its workbench contrib (React is already bundled there).
+
+  Its Beast retrieval, Turbo Draft and memory can then be used directly instead of reimplemented. Deferred because
+  the first build alone costs hours (`npm ci`, `buildreact`, `compile`), and Round 1 requires an extension.
+- **Tree-sitter symbols** (D7): better precision on decorators, nested code and more languages (V3Code's chunker uses
+  web-tree-sitter with an 80-line window fallback).
+- **Optional embeddings retrieval** as a fifth RRF channel, behind a setting (V3Code: a fast 256-d model first,
+  a 1024-d model backfilled). It needs a model that TrueForge can
   serve for embeddings.
 - **TrueForge sandbox, then native skills and Code Mode**, once local sandbox execution ships (it is on TrueForge's
   roadmap).

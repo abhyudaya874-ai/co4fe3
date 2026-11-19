@@ -5,8 +5,10 @@ Change a decision only in its own commit, with the reason.
 
 **D1 Build from scratch, no fork.** The alternative was forking Cline and removing its agent loop and provider layer.
 Removing them touches most of Cline, and keeping any of its loop is an eligibility failure. From scratch, the fork
-point is simply "from scratch", the git history is short and readable, and the core can be reused by a Code-OSS app
-later. Ideas, not code, come from other projects (D18).
+point is simply "from scratch", the git history is short and readable, and the core can be reused by the co4fe3 app
+(a V3Code-based fork) later. Ideas, not code, come from other projects (D18, D19). Forking V3Code itself for Round 1
+was rejected: the brief asks for a VS Code extension, V3Code is a whole editor whose first build takes hours, and it
+keeps its own agent loop, which TrueForge must replace.
 
 **D2 Exact pins.** The TrueForge server is pinned in `npm run trueforge` (`<PINNED>`, filled in at bootstrap).
 `@truefoundry/trueforge-sdk` is `0.185.0`, the release that introduced paused turns. `@modelcontextprotocol/sdk` is
@@ -19,7 +21,8 @@ into `sessions.create`. `scripts/save-agents.mjs` also saves them as named agent
 
 **D4 Editor tools as a localhost HTTP MCP server.** TrueForge connects only to remote MCP servers (streamable HTTP or
 SSE), so stdio was not an option. Each window gets a server on 127.0.0.1 with a random bearer token, a Host check
-against DNS rebinding, and the name `co4fe3-ws-<hash>`, so two windows do not overwrite each other.
+against DNS rebinding, a loopback peer check (as V3Code's bridge accepts only loopback endpoints), a bound
+on every result, and the name `co4fe3-ws-<hash>`, so two windows do not overwrite each other.
 
 **D5 The approval pause is the review.** `propose_edit` and `run_command` are gated by literal name. At the pause,
 the extension computes the hunks and the user decides each one. After **allow**, the tool runs and writes only what
@@ -35,20 +38,27 @@ read other files. The prompt carries 40 lines of context and the file outline in
 40 lines, and it covers Python (`def`, `class`, click `@*.command("name")`) and TS/JS definitions. The trade-off is
 lower precision on decorators, nested functions and multi-line signatures. Tree-sitter is in the backlog.
 
-**D8 Personalized PageRank over a "uses a name defined in" graph.** This reimplements Aider's repo-map idea:
-lexical matches, mentions and the active file seed a PageRank. It is deterministic, takes milliseconds, explains
-itself through its reasons, and needs no embedding model. The trade-off is no semantic matching: synonyms rely on
-stemming and prefix matches.
+**D8 Four ranked channels fused with Reciprocal Rank Fusion (k = 60).** The channels are lexical, graph
+(personalized PageRank over a "uses a name defined in" graph, Aider's repo-map idea), grep (ripgrep hits for the
+rarest request terms) and recent (open and changed files). The fusion is V3Code's (`semanticIndex/rrf.ts`). RRF needs
+no score calibration between channels, tolerates a missing channel, and its per-channel ranks are a free explanation
+for the pack card. It is deterministic and takes milliseconds. The trade-off is no semantic matching: there are no
+embeddings (V3Code uses two models and a sidecar), so synonyms rely on stemming and prefix matches. The earlier
+weighted blend (0.6 PageRank + 0.4 lexical) was dropped: its weights were arbitrary and it could not explain itself.
 
 **D9 No tsc emit.** tsc only type-checks. esbuild bundles the extension (CJS, `vscode` external) and Vite bundles the
 webview. agent-core's `exports` point at its TypeScript source, so there is no `dist/` to go stale.
 
-**D10 The crew is TrueForge dynamic subagents, named by the lead.** Roles come from the brief's first line
-(`ROLE: explore|edit|test|review`) and are enforced at the approval pause. Members never message each other: brief
-down, report up, and the board for shared facts. This copies the UltraPals team model, without Battle or Loop.
-The product works the same with the crew off, or with a model that never delegates.
+**D10 The crew is TrueForge dynamic subagents, named by the lead, with V3Code's two profiles.** The brief's
+`PROFILE: research | work` line decides the profile, and a missing line means research. The profile is enforced at
+the approval pause, and the advertised tools match the gate. V3Code's status vocabulary and evidence check decide
+`completed` versus `blocked`. Members never message each other: brief down, report up, and the board for shared
+facts. This copies the UltraPals team model, without Battle or Loop. The product works the same with the crew off,
+or with a model that never delegates. Five ad-hoc roles were replaced by two profiles, because two profiles derive
+from the approval map and five roles needed their own tables.
 
-**D11 Preload our tools; defer everything else.** Our 10 tools cost about 2k tokens preloaded. Deferring them would
+**D11 Preload our tools in read-first order; defer everything else.** Our 11 tools cost about 2.2k tokens
+preloaded, registered locators-first because models treat list position as priority (V3Code `availableTools`). Deferring them would
 cost three discovery round trips the first time each one is used. MCP servers the user adds keep the deferred
 default. This is a deliberate use of TrueForge's deferred tool loading, explained in the write-up.
 
@@ -67,8 +77,11 @@ mode never hedges, because its tools have side effects.
 **D15 React + Vite webview themed only through VS Code's CSS variables; no Tailwind.** The view matches every theme
 for free, the bundle is small, and there is no extra build step. Model text renders as React elements only.
 
-**D16 The product reads Devin-format instructions.** `.co4fe3/` comes first, then `.devin/`. Skills load through our
-`load_instructions` MCP tool, because TrueForge's native skills need a sandbox.
+**D16 The product reads Devin- and V3Code-format instructions.** It reads V3Code's list of instruction files
+(AGENTS.md, CLAUDE.md, .cursorrules, …), its skill triggers (globs, keywords, alwaysApply) and its
+`<skills_index>` / `<active_skills>` split. `.co4fe3/` wins over `.v3code/` and `.devin/` for skills. Skills load
+through our `load_instructions` MCP tool, because TrueForge's native skills need a sandbox. Active skills go in the
+turn message, not the instructions, so the prompt prefix stays cacheable.
 
 **D17 NIM primary, Gemini Flash-Lite fallback.** UltraPals measured both in Nov 2026: NIM took 8 parallel requests
 without a refusal, and Flash-Lite answered in 0.8–2 s. Both are free tiers, so they cost $0. The live bench decides
@@ -83,3 +96,37 @@ the final order.
 - Goose: MCP-first tools.
 - UltraPals (our own project): lead + crew, one event union with a pure reducer, the model router (cooldowns,
   stall timer, hedging), context accounting.
+- V3Code: see D19.
+
+**D19 V3Code is the reference architecture; ideas are reimplemented, never copied.** V3Code
+(github.com/HeavenFYouMissed/V3Code, Apache-2.0, studied at `2eac91fb`) is the most complete open source AI editor on
+Void, and its policy lives in pure modules that translate well to an extension. The full adopt/adapt/skip table is in
+`docs/study/v3code.md` §15. We adopted:
+- the runtime turn policy (repeat 3/5, mistake stop);
+- modes and profiles derived from one approval map;
+- read-first tool order;
+- evidence-checked members and the canonical status vocabulary;
+- the cancel order;
+- truncation with a recovery hint and a bound on every MCP result;
+- typed command timeouts and stream watchdogs;
+- RRF retrieval with a latency budget;
+- the LSP-backed `pack_context` with per-task caps and trim order;
+- closed edit-reject reasons;
+- verify-against-baseline after an apply;
+- the inline run-state machine with `sourceChanged`;
+- the instruction-file list and skill triggers.
+
+We skipped what needs workbench internals or native code: in-buffer diff zones (D20), embeddings, tree-sitter, the
+Beast sidecar, voice, browser and computer use. No V3Code code is copied: rule 05, enforced by `guard-write.sh` and
+`check-invariants.mjs`. `NOTICE` credits the design.
+
+**D20 Proposal document + diff editor, not V3Code's in-buffer diff zones.** V3Code streams edits into the buffer and
+reverts rejected diffs, with view zones and an undo element per step. An extension cannot draw those zones, and
+writing before the decision breaks the Forge-a-thon's "no silent writes". Our proposal lives in a virtual document
+shown in VS Code's diff editor. The file is written once, after the decision, through the single writer. The cost is
+a separate tab instead of inline red/green; the gain is that the file on disk never holds an undecided change.
+
+**D21 One review per file per pause.** When TrueForge pauses on several `propose_edit` calls for the same file, only
+the first is reviewed and the rest are denied with a reason. This is V3Code's "reject-conflicts" behaviour, fixed.
+TrueForge does not promise the order in which it runs the handlers, so planning two proposals against the same
+`before` would produce a conflict. Denying is deterministic, and the model simply proposes again.

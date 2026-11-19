@@ -32,6 +32,9 @@ NOT FOUND: any other call to workspace.applyEdit (searched extensions/, packages
 2. Read the WHOLE file for anything you cite.
 3. Follow callers one level up; stop at two.
 4. For SDK, VS Code or MCP names, read the installed `.d.ts` (the `research-web` skill). Never answer from memory.
+5. For "how should this work?", read `docs/study/v3code.md`, then the V3Code file it cites. The repo is outside the
+   workspace, so use absolute paths with `rg`, `sed -n` and `cat`: `rg -n "<symbol>" /home/de3p/V3Code/src/vs/workbench/contrib/void`.
+   Report V3Code findings as `V3Code <path>:<line> — <idea>`, never as code to paste (rule 05).
 
 ## Hard limits
 

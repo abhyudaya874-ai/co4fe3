@@ -21,17 +21,23 @@ function walk(dir, exts, out = []) {
   return out;
 }
 
-function scan(files, re, message, except = []) {
+function scan(files, re, message, except = [], { comments = false } = {}) {
   for (const f of files) {
     const r = rel(f);
     if (except.includes(r)) continue;
     checks++;
     readFileSync(f, "utf8").split("\n").forEach((line, i) => {
-      if (/^\s*(\/\/|\*)/.test(line)) return; // comments may name forbidden things
+      if (!comments && /^\s*(\/\/|\/?\*)/.test(line)) return; // code checks: comments may name forbidden things
       if (re.test(line)) problems.push(`${r}:${i + 1} — ${message}`);
     });
   }
 }
+
+// The source of truth is runtime/modes.ts TOOLS (rule 50 §1); before it exists, this list.
+// Order matters: registration order is read-first (rule 60 lever 2).
+const KNOWN_TOOLS = ["repo_map", "search_workspace", "find_symbol", "pack_context", "read_file", "list_changes",
+  "board_read", "board_write", "load_instructions", "propose_edit", "run_command"];
+const GATED_TOOLS = ["propose_edit", "run_command"];
 
 const TS = [".ts", ".tsx"];
 const core = walk("packages/agent-core/src", TS);
@@ -68,21 +74,49 @@ for (const [file, isCoder] of [["agents/co4fe3-coder.agent.json", true], ["agent
   if (/"(mcp_servers|require_approval_for_tools|dynamic_sub_agents|ask_user_questions|context_management)"/.test(text)) problems.push(`${file} — snake_case keys: the TS SDK wants camelCase (mcpServers, requireApprovalForTools, …)`);
   const editor = (spec.mcpServers ?? []).find((m) => m.name === "$EDITOR");
   if (isCoder) {
-    for (const t of ["propose_edit", "run_command"]) if (!(editor?.requireApprovalForTools ?? []).includes(t)) problems.push(`${file} — ${t} must be in requireApprovalForTools (law 4)`);
+    for (const t of GATED_TOOLS) if (!(editor?.requireApprovalForTools ?? []).includes(t)) problems.push(`${file} — ${t} must be in requireApprovalForTools (law 4)`);
     if (editor && editor.preload !== true) problems.push(`${file} — the editor server must be preload: true (rule 60, lever 2)`);
+    // The lead's text must use the brief lines parseProfile reads (rule 50 §1), and name the context tool it should prefer.
+    for (const needle of ["PROFILE: research", "PROFILE: work", "pack_context", "At most 3 members"]) if (!(spec.instructions ?? "").includes(needle)) problems.push(`${file} — the lead instructions must contain "${needle}" (rule 50 §7)`);
   } else if ((spec.mcpServers ?? []).length) problems.push(`${file} — the inline agent has no tools (rule 60, lever 1)`);
   if (spec.config?.askUserQuestions?.enabled !== false) problems.push(`${file} — askUserQuestions must be disabled (rule 20, trap 14)`);
   if (spec.config?.contextManagement?.largeToolResponse?.enabled !== false) problems.push(`${file} — largeToolResponse must be disabled: it needs a sandbox (rule 20, trap 12)`);
 }
 
-// The MCP server registers exactly the documented tools.
+// One tool list, everywhere (KNOWN_TOOLS / GATED_TOOLS are declared at the top of this file).
+const modesFile = "packages/agent-core/src/runtime/modes.ts";
+let tools = KNOWN_TOOLS;
+if (existsSync(modesFile)) {
+  checks++;
+  const m = /export const TOOLS\s*=\s*\[([\s\S]*?)\]/.exec(readFileSync(modesFile, "utf8"));
+  const found = m ? [...m[1].matchAll(/["']([a-z_]+)["']/g)].map((x) => x[1]) : [];
+  if (!found.length) problems.push(`${modesFile} — could not find \`export const TOOLS = [...]\` (rule 50 §1)`);
+  else if (found.join() !== KNOWN_TOOLS.join()) problems.push(`${modesFile} — TOOLS is [${found.join(", ")}] but the documented list is [${KNOWN_TOOLS.join(", ")}]. Change both (CODEMAP, rule 50, this script) in one commit, with the human's okay.`);
+  else tools = found;
+}
 const server = "packages/agent-core/src/mcp/server.ts";
 if (existsSync(server)) {
   checks++;
-  const known = ["read_file", "search_workspace", "find_symbol", "repo_map", "propose_edit", "run_command", "board_read", "board_write", "list_changes", "load_instructions"];
-  for (const m of readFileSync(server, "utf8").matchAll(/registerTool\(\s*["']([a-z_]+)["']/g))
-    if (!known.includes(m[1])) problems.push(`${server} — tool ${m[1]} is not in CODEMAP: add it there, to rule 50's role sets and to this list (with the human's okay)`);
+  const registered = [...readFileSync(server, "utf8").matchAll(/registerTool\(\s*["']([a-z_]+)["']/g)].map((x) => x[1]);
+  for (const t of registered) if (!tools.includes(t)) problems.push(`${server} — tool ${t} is not in TOOLS / CODEMAP`);
+  for (const t of tools) if (!registered.includes(t)) problems.push(`${server} — TOOLS lists ${t} but it is not registered`);
+  if (registered.length === tools.length && registered.join() !== tools.join()) problems.push(`${server} — tools must be registered in TOOLS order (read-first, rule 60): ${tools.join(", ")}`);
 }
+// The docs must list the same tools (doc drift is how small models invent names).
+if (existsSync("docs/CODEMAP.md")) {
+  checks++;
+  const sec = /## The (\d+) MCP tools[^\n]*\n([\s\S]*?)(\n## |$)/.exec(readFileSync("docs/CODEMAP.md", "utf8"));
+  if (!sec) problems.push("docs/CODEMAP.md — missing the '## The N MCP tools' section");
+  else {
+    if (Number(sec[1]) !== tools.length) problems.push(`docs/CODEMAP.md — says ${sec[1]} MCP tools, the list has ${tools.length}`);
+    for (const t of tools) if (!new RegExp(`\`${t}\\{`).test(sec[2])) problems.push(`docs/CODEMAP.md — tool ${t} is missing from the MCP tools section`);
+  }
+}
+
+// Rule 05: no copied V3Code / Void code, and no borrowed product identifiers in our exports.
+// Headers live in comments, so this scan includes comment lines. This file names the pattern, so it is excluded.
+scan([...product, ...walk("scripts", [".mjs"]), ...walk("test", TS)], /Copyright.{0,40}(KandD Labs|Glass Devtools)|Part of V3Code, distributed by/, "V3Code/Void licence header: this looks like copied code (rule 05). Reimplement the idea in our own code", ["scripts/check-invariants.mjs"], { comments: true });
+scan(product, /export\s+(?:async\s+)?(?:function|class|const|interface|type)\s+(?:void|Void|v3code|V3Code|V3)[A-Z_]/, "exported name borrowed from V3Code/Void (rule 05): use a co4fe3 name");
 
 // Law 7: no secrets in tracked files.
 try {

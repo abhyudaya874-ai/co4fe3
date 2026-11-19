@@ -39,6 +39,7 @@ If you cannot find it there, it does not exist in our minimum version.
       { "command": "co4fe3.undoLast", "title": "Undo last applied change", "category": "co4fe3" },
       { "command": "co4fe3.revertTurn", "title": "Revert this turn's changes", "category": "co4fe3" },
       { "command": "co4fe3.pickModel", "title": "Choose models", "category": "co4fe3" },
+      { "command": "co4fe3.cycleMode", "title": "Cycle mode (Agent / Ask / Plan)", "category": "co4fe3" },
       { "command": "co4fe3.resetStats", "title": "Reset model stats", "category": "co4fe3" },
       { "command": "co4fe3.openSession", "title": "Open session in TrueForge", "category": "co4fe3" },
       { "command": "co4fe3.startTrueForge", "title": "Start TrueForge in a terminal", "category": "co4fe3" },
@@ -50,7 +51,8 @@ If you cannot find it there, it does not exist in our minimum version.
       { "command": "co4fe3.inlineCancel", "key": "escape", "when": "co4fe3.inlineBusy" },
       { "command": "co4fe3.hunk.acceptAtCursor", "key": "alt+y", "when": "resourceScheme == co4fe3-proposal" },
       { "command": "co4fe3.hunk.rejectAtCursor", "key": "alt+n", "when": "resourceScheme == co4fe3-proposal" },
-      { "command": "co4fe3.proposal.acceptAll", "key": "alt+shift+y", "when": "resourceScheme == co4fe3-proposal" }
+      { "command": "co4fe3.proposal.acceptAll", "key": "alt+shift+y", "when": "resourceScheme == co4fe3-proposal" },
+      { "command": "co4fe3.cycleMode", "key": "ctrl+.", "mac": "cmd+.", "when": "focusedView == co4fe3.panel" }
     ],
     "menus": {
       "editor/title": [
@@ -72,11 +74,13 @@ If you cannot find it there, it does not exist in our minimum version.
         "co4fe3.trueforge.url": { "type": "string", "default": "http://localhost:8790", "description": "TrueForge local server." },
         "co4fe3.trueforge.command": { "type": "string", "default": "npm run trueforge", "description": "Command run by 'Start TrueForge in a terminal'." },
         "co4fe3.models.order": { "type": "array", "items": { "type": "string" }, "default": [], "markdownDescription": "Model FQNs as TrueForge lists them; the first is the primary. Empty: the first two models TrueForge lists." },
+        "co4fe3.mode": { "type": "string", "enum": ["agent", "ask", "plan"], "default": "agent", "markdownDescription": "Agent edits (with review); Ask and Plan are read-only. Applies to the next chat session." },
         "co4fe3.crew.enabled": { "type": "boolean", "default": true, "description": "Let the lead agent delegate to subagents." },
         "co4fe3.context.packTokens": { "type": "number", "default": 6000, "minimum": 1000, "maximum": 12000 },
         "co4fe3.latency.autoOrderInline": { "type": "boolean", "default": true, "description": "Order inline-edit models by measured time to first token." },
         "co4fe3.latency.hedgeInline": { "type": "boolean", "default": true, "description": "Start the next model if the first is slow to start streaming." },
-        "co4fe3.commands.timeoutSeconds": { "type": "number", "default": 120, "minimum": 5, "maximum": 600 }
+        "co4fe3.commands.timeoutSeconds": { "type": "number", "default": 120, "minimum": 5, "maximum": 600 },
+        "co4fe3.autoApprove.terminal": { "type": "boolean", "default": false, "markdownDescription": "Run commands that pass the command policy without asking. Edits are always reviewed." }
       }
     },
     "configurationDefaults": { "diffEditor.codeLens": true }
@@ -154,6 +158,39 @@ Reading with `workspace.fs.readFile` is allowed anywhere in the extension. **Wri
 - Refresh: fire the provider's `onDidChange(uri)` and the lens provider's `onDidChangeCodeLenses`. Never close and
   reopen the editor to refresh.
 - Context keys: `setContext("co4fe3.inlineBusy", bool)`, plus `co4fe3.devMode` in Development mode.
+
+## Language features through built-in commands (`host/lsp.ts`, `editorHost.problems`)
+
+Use the public built-in commands, verified on code.visualstudio.com/api/references/commands. This is V3Code's
+Context Bridge idea (`lspBridgeAdapter.ts`), done through the extension API instead of workbench services.
+
+| Need | Call | Returns |
+|---|---|---|
+| symbols in a file | `vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider", uri)` | `(SymbolInformation \| DocumentSymbol)[]` |
+| definition | `"vscode.executeDefinitionProvider", uri, position` | `(Location \| LocationLink)[]` |
+| references | `"vscode.executeReferenceProvider", uri, position` | `Location[]` |
+| callers | `"vscode.prepareCallHierarchy", uri, position` → `"vscode.provideIncomingCalls", item` | `CallHierarchyItem[]` → `CallHierarchyIncomingCall[]` |
+| hover / signature | `"vscode.executeHoverProvider", uri, position` | `Hover[]` (`contents`: `MarkdownString \| MarkedString`) |
+| diagnostics | `vscode.languages.getDiagnostics(uri)` and `vscode.languages.onDidChangeDiagnostics` | `Diagnostic[]` |
+
+Every call resolves to `undefined` or `[]` when no provider is installed, which is normal (no Python extension). Wrap
+each one in a 1.5 s ceiling. Map `Diagnostic` to our `Problem` like this:
+
+```ts
+const SEV = ["error", "warning", "info", "hint"] as const;      // vscode.DiagnosticSeverity: Error=0, Warning=1, Information=2, Hint=3
+export const problemsOf = (uri: vscode.Uri): Problem[] => vscode.languages.getDiagnostics(uri).map((d) => ({
+  code: typeof d.code === "object" ? String(d.code.value) : String(d.code ?? d.source ?? ""),
+  severity: SEV[d.severity] ?? "info", message: d.message, line: d.range.start.line,
+}));
+/** Waits until diagnostics for `uri` change after `since`, or `waitMs` passes. Never rejects. */
+export function diagnosticsSettled(uri: vscode.Uri, waitMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(done, waitMs);
+    const sub = vscode.languages.onDidChangeDiagnostics((e) => { if (e.uris.some((u) => u.toString() === uri.toString())) done(); });
+    function done() { clearTimeout(t); sub.dispose(); resolve(); }
+  });
+}
+```
 
 ## Webview
 

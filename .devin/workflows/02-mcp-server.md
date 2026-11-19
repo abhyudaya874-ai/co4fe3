@@ -1,12 +1,22 @@
 ---
-description: Build the editor MCP server (10 tools) on 127.0.0.1 with bearer auth, register it in TrueForge per window, and prove TrueForge can list and call it
+description: Build the editor MCP server (11 tools, read-first, every call through the turn policy and a result bound) on loopback with bearer auth, register it in TrueForge per window, and prove TrueForge can list and call it
 argument-hint: ""
 ---
 
 # 02 Editor MCP server
 
-Goal: `agent-core/src/mcp/{http,schemas,server}.ts` exposes the 10 tools in CODEMAP. The extension starts it on
-activation and registers it as `co4fe3-ws-<8 hex>`, and `client.mcpServers.listTools(name)` returns all 10.
+Goal: `agent-core/src/mcp/{http,schemas,server}.ts` exposes the 11 tools in CODEMAP, in `TOOLS` order. The extension
+starts it on activation and registers it as `co4fe3-ws-<8 hex>`, and `client.mcpServers.listTools(name)` returns all
+11. Build `runtime/modes.ts` and `runtime/policy.ts` (rule 50 §1–§2) first, with their tests: every handler depends
+on them.
+
+This mirrors V3Code's MCP bridge (`docs/study/v3code.md` §14):
+
+- loopback only, with a bearer token;
+- every result bounded before it leaves;
+- tool descriptions that start with "WHEN:".
+
+V3Code serves its own agent's tools to *external* clients. We serve the editor to TrueForge.
 
 ## 1. Transport (`mcp/http.ts`). Stateless streamable HTTP, verified against `server/streamableHttp.d.ts`.
 
@@ -27,6 +37,8 @@ export async function startMcpHttp(make: () => McpServer, log: (line: string) =>
     const got = Buffer.from(req.headers.authorization ?? "");
     if (got.length !== want.length || !timingSafeEqual(got, want)) return void res.writeHead(401).end();
     if (req.headers.host !== `127.0.0.1:${port}`) return void res.writeHead(403).end();      // DNS-rebinding guard
+    const peer = req.socket.remoteAddress ?? "";
+    if (peer !== "127.0.0.1" && peer !== "::1" && peer !== "::ffff:127.0.0.1") return void res.writeHead(403).end();  // loopback peers only (V3Code isLoopbackEndpoint)
     if (!req.url?.startsWith("/mcp")) return void res.writeHead(404).end();
     if (req.method !== "POST") return void res.writeHead(405, { allow: "POST" }).end();      // stateless: no GET stream
     try {
@@ -78,40 +90,64 @@ export const proposalKey = (rel: string, v: ProposeEdit): string =>
 
 ## 3. The tools (`mcp/server.ts`). Descriptions are the only manual a weak model gets: keep them exact.
 
+Register them in exactly this order (= `TOOLS`, read-first, rule 60 lever 2). `check-invariants.mjs` fails on any
+other order. Each description starts with **WHEN:**, which is V3Code's style and says when to pick this tool over a
+sibling.
+
 | Tool | Input | Returns (text) | Gate | Caps |
 |---|---|---|---|---|
-| `read_file` | `path, offset=1, limit=400` | header `path (lines a-b of n)` + raw text + "continues: offset=…" | — | 800 lines, jail, secrets refused |
+| `repo_map` | `query, budget_tokens=2500` | ranked outlines with reasons and per-channel ranks (rule 40 format) | — | 4,000 tokens |
 | `search_workspace` | `pattern, regex=false, glob?` | `path:line: text` lines | — | 50 hits, 200 chars each |
-| `find_symbol` | `name` | definitions `path:line sig` + "used in n files" | — | 20 defs |
-| `repo_map` | `query, budget_tokens=2500` | ranked outlines with reasons (rule 40 format) | — | 4,000 tokens |
-| `propose_edit` | `ProposeEditShape` | "Applied hunks h1,h2 of 3 to path. …" or the planEdit error | **approval** | 20 edits, 400 KB |
-| `run_command` | `command, timeout_s=120` | `exit n · 3.2 s` + capped output | **approval** | 600 s, 16 KB |
+| `find_symbol` | `name` | definitions `path:line sig` + "used in n files" (our index; instant) | — | 20 defs |
+| `pack_context` | `path, symbol, task="understand", max_tokens=3000` | definition, signature, problems, callers, references, "dropped: …" (rule 40) | — | 6,000 tokens |
+| `read_file` | `path, offset=1, limit=400` | header `path (lines a-b of n)` + raw text + "continues: offset=…" | — | 800 lines, jail, secrets refused |
+| `list_changes` | — | this turn's applied checkpoints `path +a -r why` | — | — |
 | `board_read` | `key?` | entries `key (by): value` | — | — |
 | `board_write` | `key, value, by` | `saved` or the error | — | 24 keys, 2,000 chars |
-| `list_changes` | — | this turn's applied checkpoints `path +a -r why` | — | — |
-| `load_instructions` | `kind, name` | the rule/skill body | — | rule 85 |
+| `load_instructions` | `kind, name` | the rule / skill / instruction-file body | — | rule 85 |
+| `propose_edit` | `ProposeEditShape` | "Applied 2 of 3 hunks to path. No new errors." or the planEdit error | **approval (edits)** | 20 edits, 12,000 chars per edit, 400 KB |
+| `run_command` | `command, timeout_s=120` | `exit n · 3.2 s` + capped output; or "timed out (inactivity) — do NOT assume it succeeded" | **approval (terminal)** | 600 s, 16 KB |
+
+Example descriptions (copy their shape):
+
+- `pack_context`: "WHEN: you know the file and the symbol and are about to change or explain it. Returns its
+  definition, signature, problems, callers and references in one call, trimmed to max_tokens. Use instead of several
+  read_file/search calls. Unknown symbol? use find_symbol or repo_map first."
+- `search_workspace`: "WHEN: you know an exact string or regex. Returns matching lines as path:line: text. To find
+  where an idea lives without knowing names, use repo_map."
 
 ```ts
 export interface McpDeps {
-  host: EditorHost; applier: Applier; review: ReviewStore; board: Board; guard: RepeatGuard;
+  host: EditorHost; applier: Applier; review: ReviewStore; board: Board;
   index(): RepoIndex | null; instructions(): Promise<InstructionSet>;
-  turn(): { id: string; signal: AbortSignal };             // set by the extension when a turn starts; a dummy id outside turns
+  turn(): { id: string; signal: AbortSignal; policy: TurnPolicy };   // set by the extension when a turn starts; a fresh dummy outside turns
   changes(turnId: string): Checkpoint[]; log(line: string): void;
 }
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: true };
+export const MAX_RESULT_CHARS = 60_000;                                 // ≈ 15k tokens; V3Code's boundMcpText ceiling
 const text = (t: string): ToolResult => ({ content: [{ type: "text", text: t }] });
 const toolError = (t: string): ToolResult => ({ content: [{ type: "text", text: t }], isError: true });
+const appendNote = (r: ToolResult, note: string): ToolResult => ({ ...r, content: [...r.content, { type: "text", text: note }] });
 
 export function createEditorMcpServer(d: McpDeps): McpServer {
   const s = new McpServer({ name: "co4fe3-editor", version: "0.1.0" });
   const ro = { readOnlyHint: true, openWorldHint: false } as const;
-  /** Every handler: repeat guard → timing → ToolInputError becomes a readable error result, never a thrown exception. */
-  const wrap = <A>(name: string, fn: (a: A) => Promise<ToolResult>) => async (a: A): Promise<ToolResult> => {
+  /**
+   * Every handler: turn policy (repeat / mistakes, rule 50 §2) → run → ToolInputError becomes a readable error result
+   * (never a thrown exception) → bound the result → timing line.
+   */
+  const wrap = <A>(name: ToolName, fn: (a: A) => Promise<ToolResult>) => async (a: A): Promise<ToolResult> => {
     const t = performance.now(), turn = d.turn();
-    if (d.guard.hit(turn.id, name, a) > CREW.maxSameCall) return toolError(`You already called ${name} with these exact arguments twice in this request. Use the earlier result.`);
-    try { return await fn(a); }
-    catch (e) { return toolError(e instanceof ToolInputError ? e.message : `${name} failed: ${e instanceof Error ? e.message : String(e)}`); }
+    const before = turn.policy.before(name, a);
+    if (!before.run) return toolError(before.message);
+    let res: ToolResult;
+    try { res = await fn(a); }
+    catch (e) { res = toolError(e instanceof ToolInputError ? e.message : `${name} failed: ${e instanceof Error ? e.message : String(e)}`); }
     finally { d.log(`perf mcp.${name} ${Math.round(performance.now() - t)}ms`); }
+    const after = turn.policy.after(res.isError === true);
+    const note = [before.reminder, after.message].filter(Boolean).join("\n");
+    const bounded = { ...res, content: res.content.map((c) => ({ ...c, text: truncateWithHint(c.text, MAX_RESULT_CHARS, "Ask for a smaller range.") })) };
+    return note ? appendNote(bounded, note) : bounded;
   };
 
   s.registerTool("read_file", {
@@ -140,17 +176,25 @@ export function createEditorMcpServer(d: McpDeps): McpServer {
     const { proposal, decision } = taken;
     if (decision.accepted.length === 0) return text(`The user rejected all ${proposal.hunks.length} hunks for ${rel}. Nothing was written. Do not propose them again unless asked.`);
     const after = applyHunks(proposal.before ?? "", proposal.hunks, new Set(decision.accepted));
+    const t0 = d.host.now();
     const r = await d.applier.apply({ path: rel, before: proposal.before, after, turnId: proposal.turnId, reason: v.why });
     if (!r.ok) throw new ToolInputError(r.detail);
     const rejected = decision.rejected.length ? ` The user rejected ${decision.rejected.join(", ")}; do not re-propose those.` : "";
-    return text(`Applied ${decision.accepted.length} of ${proposal.hunks.length} hunks to ${rel}.${rejected}`);
+    // Verify against the baseline taken at review time: only errors THIS edit introduced (rule 30, V3Code turboDraftVerify).
+    const fresh = newErrors(proposal.baseline, await d.host.problems(rel, { changedSince: t0, waitMs: 1500 }));
+    const verdict = fresh.length ? `\nNew errors introduced by this edit (fix exactly these):\n${fresh.slice(0, 8).map((p) => `- ${renderProblem(p)}`).join("\n")}` : " No new errors.";
+    return text(`Applied ${decision.accepted.length} of ${proposal.hunks.length} hunks to ${rel}.${rejected}${verdict}`);
   }));
 
-  // run_command, search_workspace, find_symbol, repo_map, board_*, list_changes and load_instructions follow the same
-  // shape. See docs/PATTERNS.md P4.
+  // run_command, search_workspace, find_symbol, pack_context, repo_map, board_*, list_changes and load_instructions
+  // follow the same shape. See docs/PATTERNS.md P4.
   return s;
 }
 ```
+
+`pack_context`'s handler gathers `SymbolFacts` through `d.host.lsp` and `d.host.problems` (falling back to the index
+and `rg -w` when the language server is silent), then returns `renderSymbolPack(shapeSymbolPack(facts, task,
+max_tokens))`. Every await checks `turn.signal.aborted`, so Stop never waits for a slow language server.
 
 ## 4. Register per window (`extensions/…/src/extension.ts` → `forge/sessions.ts`)
 
@@ -170,14 +214,21 @@ export async function registerEditorServer(client: TrueForge, name: string, mcp:
 }
 ```
 
-The status bar shows `TF ✓ 10 tools`, `TF … waiting` or `TF ✗`. Clicking it when down opens a terminal running
+The status bar shows `TF ✓ 11 tools`, `TF … waiting` or `TF ✗`. Clicking it when down opens a terminal running
 `npm run trueforge` in the extension's repo (setting `co4fe3.trueforge.command`).
 
 ## Exit check
 
+- `modes.test.ts`, `policy.test.ts` and `truncate.test.ts` are green (rule 50 §1–§2, rule 40).
 - `packages/agent-core/test/mcp-tools.test.ts` covers each tool through `@modelcontextprotocol/sdk/client` over HTTP:
-  401 without a token, 403 with a wrong Host, the jail refuses `../x` and `.env`, read_file paging, search caps,
-  RepeatGuard on the 3rd identical call, and propose_edit without a decision writes nothing.
-- `test/integration/mcp.test.ts`: TrueForge lists 10 tools, and a scripted `read_file` call reaches the handler.
-- In the Extension Development Host the status bar shows `TF ✓ 10 tools`.
+  - 401 without a token, and 403 with a wrong Host;
+  - `tools/list` returns the 11 names in `TOOLS` order;
+  - the jail refuses `../x` and `.env`;
+  - read_file paging and search caps;
+  - the 3rd identical call carries the policy reminder and the 5th is refused;
+  - a 100,000-char result is bounded with the note;
+  - propose_edit without a decision writes nothing;
+  - pack_context with a fake `LspHost` that returns nothing falls back to the index (`source: index`).
+- `test/integration/mcp.test.ts`: TrueForge lists 11 tools, and a scripted `read_file` call reaches the handler.
+- In the Extension Development Host the status bar shows `TF ✓ 11 tools`.
 - Commit: `mcp: editor tool server with bearer auth, registered per window`

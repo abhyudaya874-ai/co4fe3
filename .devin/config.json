@@ -23,7 +23,11 @@
       "Exec(ls)",
       "Exec(cat)",
       "Exec(sed -n)",
-      "Exec(df -h)"
+      "Exec(df -h)",
+      "Read(/home/de3p/V3Code/**)",
+      "Exec(git -C /home/de3p/V3Code log)",
+      "Exec(git -C /home/de3p/V3Code rev-parse)",
+      "Exec(bash scripts/hooks/test-hooks.sh)"
     ],
     "ask": [
       "Edit(scripts/check-invariants.mjs)",
@@ -55,7 +59,9 @@
       "Exec(git push --force)",
       "Exec(git push -f)",
       "Exec(npm publish)",
-      "Exec(npx @vscode/vsce publish)"
+      "Exec(npx @vscode/vsce publish)",
+      "Write(/home/de3p/V3Code/**)",
+      "Edit(/home/de3p/V3Code/**)"
     ]
   }
 }

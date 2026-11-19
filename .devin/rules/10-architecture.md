@@ -17,8 +17,13 @@ packages/agent-core/src            The brain. Pure TypeScript. NO `vscode`, NO `
 TrueForge (npx, localhost:8790) ──────────────┘   TrueForge calls our MCP server; we never call a provider.
 ```
 
-`packages/agent-core` is the same code the Code-OSS app will use after Round 1. Keep its API stable, and keep every
-export listed in `docs/CODEMAP.md`.
+`packages/agent-core` is the same code the co4fe3 app (a V3Code-based fork, after Round 1) will use. Keep its API
+stable, and keep every export listed in `docs/CODEMAP.md`.
+
+This layering is V3Code's own discipline, applied to an extension. V3Code keeps policy in pure `common/` modules
+(no editor or DOM imports), tested headless with mocha, and puts I/O in `browser/` services. We use the same split
+across two packages: `agent-core` ≈ V3Code `common/`, `extensions/co4fe3-vscode/src` ≈ V3Code `browser/`
+(`docs/study/v3code.md`).
 
 ## Repository layout (create exactly this; add files only through CODEMAP.md)
 
@@ -32,22 +37,23 @@ co4fe3/
 ├── scripts/                        verify.mjs, check-invariants.mjs, setup-trueforge.mjs, bench-latency.mjs, hooks/
 ├── packages/agent-core/
 │   ├── src/
-│   │   ├── host.ts                 EditorHost, Applier, CommandRequest, SearchHit (interfaces only)
-│   │   ├── forge/                  client.ts, spec.ts, turn.ts, events.ts, fallback.ts
+│   │   ├── host.ts                 EditorHost, LspHost, Applier, CommandRequest, SearchHit (interfaces only)
+│   │   ├── runtime/                modes.ts (TOOLS, APPROVAL, modes, profiles), policy.ts (TurnPolicy)   ← V3Code §1–§3
+│   │   ├── forge/                  client.ts, spec.ts, turn.ts, attempt.ts, events.ts, fromForge.ts, fallback.ts, messages.ts
 │   │   ├── mcp/                    server.ts (tools), http.ts (transport + auth), schemas.ts
-│   │   ├── review/                 lines.ts, hunks.ts, edits.ts, store.ts, checkpoints.ts
-│   │   ├── context/                tokens.ts, symbols.ts, repomap.ts, pack.ts, mentions.ts
-│   │   ├── crew/                   roles.ts, policy.ts, board.ts
-│   │   ├── latency/                stats.ts, marks.ts
+│   │   ├── review/                 lines.ts, hunks.ts, edits.ts, store.ts, checkpoints.ts, inline.ts, verify.ts
+│   │   ├── context/                tokens.ts, symbols.ts, repomap.ts, rrf.ts, pack.ts, symbolPack.ts, budget.ts, mentions.ts
+│   │   ├── crew/                   policy.ts (CREW, crewWatch, commandPolicy), evidence.ts, board.ts
+│   │   ├── latency/                stats.ts, hedge.ts, marks.ts
 │   │   ├── instructions/           frontmatter.ts, load.ts
 │   │   ├── panel/                  events.ts (PanelEvent), reducer.ts (applyPanelEvent), coalesce.ts
-│   │   └── util/                   redact.ts, stable.ts (stableStringify, sha256Hex), abort.ts
+│   │   └── util/                   redact.ts, stable.ts, jail.ts, truncate.ts, queue.ts, abort.ts
 │   └── test/                       *.test.ts (unit, no network, no vscode)
 ├── extensions/co4fe3-vscode/
 │   ├── package.json                contributes: commands, keybindings, views, configuration, configurationDefaults
 │   ├── src/
 │   │   ├── extension.ts            activate(): wires everything, nothing else
-│   │   ├── host/                   editorHost.ts (EditorHost impl), commands.ts (the ONLY child_process use)
+│   │   ├── host/                   editorHost.ts (EditorHost impl), lsp.ts (LspHost via built-in commands), commands.ts (the ONLY child_process use)
 │   │   ├── review/                 apply.ts (the ONLY writer), proposalDocs.ts, hunkLens.ts, controller.ts
 │   │   ├── inline/                 inlineEdit.ts (Task A)
 │   │   ├── panel/                  panelView.ts (WebviewViewProvider), bridge.ts (batching)
@@ -73,14 +79,29 @@ export interface EditorHost {
   listFiles(limit?: number): Promise<string[]>;
   /** ripgrep. Literal by default; `regex: true` opts in. Never throws on "no matches": returns []. */
   search(q: SearchQuery, signal: AbortSignal): Promise<SearchHit[]>;
-  /** Runs one shell command in `root`. Killed when `signal` aborts or `timeoutMs` passes. Output capped. */
+  /** Runs one shell command in `root`. Killed when `signal` aborts, or on a wall-clock / inactivity timeout. Output capped. */
   run(req: CommandRequest, signal: AbortSignal): Promise<CommandResult>;
+  /** Language-server problems for one file (rule 30, verify). With `waitMs`, waits that long for a diagnostics change after `changedSince`. [] when no server. */
+  problems(rel: string, o?: { changedSince?: number; waitMs?: number }): Promise<Problem[]>;
+  /** Language features through VS Code's built-in commands (rule 40, pack_context). Every method resolves [] / null when no provider answers. */
+  readonly lsp: LspHost;
   now(): number;
 }
 export interface SearchQuery { pattern: string; regex?: boolean; glob?: string; maxHits?: number }
 export interface SearchHit { path: string; line: number; text: string }
-export interface CommandRequest { command: string; timeoutMs: number; maxOutputBytes: number }
-export interface CommandResult { exitCode: number | null; output: string; truncated: boolean; timedOut: boolean; killed: boolean; ms: number }
+export interface CommandRequest { command: string; timeoutMs: number; inactivityMs: number; maxOutputBytes: number }
+export interface CommandResult { exitCode: number | null; output: string; truncated: boolean; timedOut: "wall_clock" | "inactivity" | null; killed: boolean; ms: number }
+
+/** Positions are 0-based. `rel` is workspace-relative and already jailed. Extension side: host/lsp.ts. */
+export interface LspHost {
+  documentSymbols(rel: string): Promise<LspSymbol[]>;                          // vscode.executeDocumentSymbolProvider (flattened, with parent names)
+  references(rel: string, line: number, col: number): Promise<LspLocation[]>;  // vscode.executeReferenceProvider
+  incomingCalls(rel: string, line: number, col: number): Promise<LspCall[]>;   // vscode.prepareCallHierarchy → vscode.provideIncomingCalls
+  hover(rel: string, line: number, col: number): Promise<string[]>;            // vscode.executeHoverProvider → markdown strings
+}
+export interface LspSymbol { name: string; kind: string; line: number; endLine: number; col: number; parent?: string }
+export interface LspLocation { path: string; line: number }                     // path: workspace-relative; outside-root hits are dropped
+export interface LspCall { from: string; path: string; line: number }           // `from` = the calling function's name
 
 /** The ONLY way bytes reach disk. Implemented in extensions/…/review/apply.ts. */
 export interface Applier {
@@ -122,7 +143,9 @@ Activation must finish in **< 150 ms**. Rule 60 has the budget. Anything slow is
 
 | You are writing… | It goes in | Never in |
 |---|---|---|
-| A pure decision (hunks, ranking, fallback order, crew policy) | `packages/agent-core/src/**` with a unit test | the extension |
+| A pure decision (hunks, ranking, fallback order, turn policy, modes, crew evidence) | `packages/agent-core/src/**` with a unit test | the extension |
+| A language-server query (symbols, references, callers, hover, diagnostics) | `host/lsp.ts` / `editorHost.problems` behind `LspHost` | agent-core |
+| An idea taken from V3Code | our own code + a D19 line in `docs/DECISIONS.md` | a pasted V3Code file |
 | Anything that touches `vscode.*` | `extensions/co4fe3-vscode/src/**` | agent-core |
 | A file write | `review/apply.ts` (through `Applier`) | anywhere else; check-invariants fails |
 | Spawning a process | `host/commands.ts` | anywhere else |
@@ -139,5 +162,7 @@ Activation must finish in **< 150 ms**. Rule 60 has the budget. Anything slow is
 3. Only `extensions/co4fe3-vscode/src/host/commands.ts` imports `child_process`.
 4. No provider hostnames and no provider SDK packages in `packages/` or `extensions/`.
 5. `webview/**` imports from agent-core only through `@co4fe3/agent-core/panel`.
-6. Every MCP tool registered in `mcp/server.ts` is listed in `agents/*.agent.json` (`enableTools`), and the gated ones
-   are listed in `requireApprovalForTools`.
+6. `mcp/server.ts` registers exactly the tools in `runtime/modes.ts` `TOOLS`, and that list matches CODEMAP's tool
+   list. The gated tools (`APPROVAL` keys) are in the coder agent's `requireApprovalForTools`.
+7. No V3Code or Void code: no `KandD Labs`, `Glass Devtools` or "Part of V3Code" headers, and no `void`/`v3code`
+   prefixed identifiers in `packages/` or `extensions/` (rule 05).

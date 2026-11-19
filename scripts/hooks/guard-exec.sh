@@ -18,6 +18,12 @@ if printf '%s' "$cmd" | grep -qE "(curl|wget|httpie|xh)\b[^|;&]*($PROVIDER_HOST_
   block "Direct provider calls are not how co4fe3 works (law 1). Test a model through TrueForge: node scripts/spike.mjs text (SPIKE_MODEL=<fqn>) or npm run bench:latency."
 fi
 
+# 2b. V3Code is a read-only reference (rule 05): read it, never build or change it.
+if printf '%s' "$cmd" | grep -qE '/home/de3p/V3Code|(^|[[:space:]])V3Code/' \
+   && printf '%s' "$cmd" | grep -qE '\b(npm|npx|yarn|pnpm|cargo|make|gulp|node)\b|\b(rm|mv|cp|tee|touch|chmod|sed -i|patch)\b|\bgit\s+(commit|checkout|reset|clean|stash|pull|push|apply|restore|switch)\b|>>?\s*(/home/de3p/)?V3Code/'; then
+  block "V3Code is a read-only reference (rule 05). Read it with rg / sed -n / cat / git log; never build, install or change it. Its build is gigabytes and hours, and co4fe3 does not need it."
+fi
+
 # 3. TrueForge is pinned.
 if printf '%s' "$cmd" | grep -qE '@truefoundry/trueforge@latest'; then
   block "TrueForge is pinned. Run: npm run trueforge (it uses the version in package.json)."

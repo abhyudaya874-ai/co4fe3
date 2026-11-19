@@ -13,7 +13,7 @@ evidence: command output or a timestamp in the video.
 - [ ] Every turn goes through TrueForge (`grep -rn "createTurnStream" packages/agent-core/src` hits `forge/turn.ts` only).
 - [ ] No provider calls: `node scripts/check-invariants.mjs` passes, and
   `grep -rnE "integrate\.api\.nvidia|generativelanguage|openrouter\.ai|api\.openai\.com" packages extensions` is empty.
-- [ ] The editor tools are MCP: the status bar shows `TF ✓ 10 tools`.
+- [ ] The editor tools are MCP: the status bar shows `TF ✓ 11 tools`.
 - [ ] `agents/co4fe3-coder.agent.json` and `agents/co4fe3-inline.agent.json` are committed and match what the
   extension sends (the `buildSpec` test).
 - [ ] TrueForge runs in local mode from `npm run trueforge` (pinned version).

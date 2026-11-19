@@ -11,6 +11,7 @@ Laws: 1 TrueForge runs the loop, never call a provider. 2 agent-core imports no 
 6 never write an SDK/VS Code/MCP name from memory (rule 20, CODEMAP, .d.ts). 7 no secrets in git. 8 verify before commit.
 The runtime crew = a lead + subagents TrueForge spawns (the lead names them), brief down / report up, board for facts.
 Fixed tasks: A inline edit (get_debug_flag), B agent mode (flask config command, 3+ files), C fallback when the model fails.
+Reference architecture: V3Code at /home/de3p/V3Code (read-only). Ideas yes, code never (rule 05, docs/study/v3code.md).
 Copy patterns from docs/PATTERNS.md. Check docs/ANTI-PATTERNS.md before reporting done.
 Start: /start-session   Stuck twice on the same error: STOP, write tried/saw/now suspect, re-plan.
 CTX

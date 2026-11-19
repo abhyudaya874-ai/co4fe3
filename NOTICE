@@ -1,0 +1,24 @@
+co4fe3
+Copyright (c) 2026 co4fe3 contributors
+Licensed under the MIT License (see LICENSE).
+
+co4fe3 contains no third-party source code other than its declared npm dependencies.
+
+Its design is informed by the following open source projects. Ideas, parameters and architecture were studied and
+reimplemented in co4fe3's own code; no code was copied from them.
+
+- V3Code, Copyright (c) 2025-2026 KandD Labs, Apache License 2.0.
+  https://github.com/HeavenFYouMissed/V3Code, studied at commit 2eac91fb.
+  Ideas: runtime policy (repeat thresholds, consecutive-mistake stop), modes derived from approval categories,
+  research/work subagent profiles, evidence-checked worker outcomes, Reciprocal Rank Fusion retrieval with a
+  latency budget, the LSP-backed context pack and its per-task caps, verify-against-baseline after an edit,
+  monotonic draft run states, project instruction and skill loading. "V3Code" is a trademark of KandD Labs;
+  co4fe3 is not affiliated with it.
+- Void Editor, Copyright Void Editor contributors, Apache License 2.0. https://github.com/voideditor/void
+  Ideas: streamed per-diff review and search/replace edits (via V3Code).
+- Cline, Copyright (c) Cline Bot Inc., Apache License 2.0. https://github.com/cline/cline
+  Ideas: tool approval flow, checkpoints.
+- Aider, Apache License 2.0. https://github.com/Aider-AI/aider
+  Ideas: repository map ranked by a reference graph, search/replace edit format.
+- Continue, Copyright (c) Continue Dev, Inc., Apache License 2.0. https://github.com/continuedev/continue
+  Ideas: @-mentions, context providers.

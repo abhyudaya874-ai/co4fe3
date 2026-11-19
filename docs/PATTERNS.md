@@ -54,13 +54,14 @@ bridge.flush();
 
 ## P4 Add an MCP tool
 
-Files: `mcp/server.ts`, `docs/CODEMAP.md`. Also rule 50's role sets, and `check-invariants.mjs`'s known-tool list
-(the human approves that edit).
+Files: `mcp/server.ts`, `docs/CODEMAP.md`, and `runtime/modes.ts` `TOOLS` (plus `APPROVAL` if it changes
+anything). Also `check-invariants.mjs`'s `KNOWN_TOOLS` (the human approves that edit). The checker fails until all
+four agree, including the read-first order.
 
 ```ts
 s.registerTool("find_symbol", {
   title: "Find a symbol",
-  description: "Find where a function, class or command is defined, and how many files use it. Exact name, case-sensitive.",   // one job, what it returns, the limits
+  description: "WHEN: you know the exact symbol name and need where it is defined. Returns path:line and signature for each definition, and how many files use it. Instant (our index). For the body, callers and problems use pack_context; for an idea with no name use repo_map.",   // WHEN first, then what it returns, then the sibling to use instead (V3Code style)
   inputSchema: { name: z.string().min(1).max(120) },
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, wrap("find_symbol", async ({ name }) => {
@@ -73,11 +74,13 @@ s.registerTool("find_symbol", {
 ```
 
 Every tool:
-- goes through `wrap()` (repeat guard, timing, readable errors);
+- goes through `wrap()`, which applies the `TurnPolicy` (repeat reminder/refusal, the mistake stop), turns
+  `ToolInputError` into a readable error, bounds the result at 60,000 chars and logs the timing;
 - passes paths through `jail()`;
-- caps its output from `BUDGET`;
+- caps its own output from `BUDGET` with `truncateWithHint(text, max, "<how to get the rest>")`;
 - has an error that tells the model what to do next;
-- uses `annotations` that are honest.
+- uses `annotations` that are honest;
+- is registered in `TOOLS` order (read-first).
 
 A tool that changes anything is gated by literal name in `agents/co4fe3-coder.agent.json` and handled in
 `pause.ts` (P5). Check: `mcp-tools.test.ts` drives the tool through the MCP client over HTTP.
@@ -170,3 +173,37 @@ await h.close();
 ```
 
 Scripts are functions of the request (rule 80), so they survive TrueForge adding system messages.
+
+## P14 Add a ranking channel (RRF)
+
+Files: `context/repomap.ts` (+ its test). A channel is just an ordered list of paths, best first, at most
+`CHANNEL_DEPTH` long. It needs no score scale, because RRF only uses ranks.
+
+```ts
+export type Channel = "lexical" | "graph" | "grep" | "recent" | "tests";        // 1. add the name (CHANNELS order = ranks order)
+const tests = ix.files.filter((f) => /(^|\/)tests?\//.test(f.path) && lists.lexical.includes(f.path.replace(/(^|\/)tests?\/test_/, "$1"))).map((f) => f.path);   // 2. build the list
+const lists: Record<Channel, string[]> = { lexical, graph, grep, recent, tests }; // 3. add it; rrfMerge does the rest
+```
+
+Then:
+
+- add a reason string for it in `reasons()`;
+- add a test proving the channel can lift a file that no other channel ranks;
+- re-run the minipkg ranking case, and the flask check from workflow 06.
+
+Never weight a channel; if one dominates, shorten its list.
+
+## P15 Borrow a V3Code idea (rule 05)
+
+1. Find the idea in `docs/study/v3code.md` §15. If it is not there, grep V3Code read-only:
+   `rg -n "<concept>" /home/de3p/V3Code/src/vs/workbench/contrib/void`.
+2. Read the file. Write down, in our words: the rule it enforces, its constants, and its edge cases.
+3. **Close the file.** Write our failing test from those notes, then our code in our layer (pure → agent-core).
+4. Add a line to `docs/DECISIONS.md` D19 (adopted / adapted / skipped) and, if it is new, a row in the study §15.
+5. Name things our way. `check-invariants.mjs` refuses exported `void*`/`v3code*` names, and `guard-write.sh`
+   refuses their licence headers.
+
+Example: V3Code's `turboDraftVerify.ts` became `review/verify.ts`. The idea (an error is new unless its code and
+normalised message existed before; counts matter; warnings are ignored) went into `verify.test.ts` first. The
+function was then written to pass it.
+

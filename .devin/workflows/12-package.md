@@ -31,15 +31,17 @@ Sections, in this order:
    `node scripts/save-agents.mjs`. It stores both as saved agents through `client.agents.create`/`update`.
 5. **Use it**: inline edit (Ctrl+Alt+K), the agent panel, the model picker, Undo, Stop.
 6. **Switch models**: the status bar picker, or `co4fe3.models.order`, or add a provider in TrueForge.
-7. **Fork point**: "Built from scratch. No upstream editor code. Ideas (not code) from Cline, Continue, Aider,
-   Roo Code and our own UltraPals project are credited in the write-up."
+7. **Fork point**: "Built from scratch. No upstream editor code. The architecture follows V3Code
+   (github.com/HeavenFYouMissed/V3Code, Apache-2.0, commit 2eac91fb), reimplemented in our own code. Ideas (not code)
+   from Cline, Continue, Aider and our own UltraPals project are credited in `NOTICE` and the write-up."
 8. **Architecture**: the diagram from the pack README, plus links to `docs/DECISIONS.md` and `docs/LATENCY.md`.
 9. **Tests**: `npm run verify`, and what it runs.
 10. **Licence**: MIT.
 
 ## 2. Files that must exist
 
-`LICENSE` (MIT); `config/providers.example.json` (no keys); `.env.example` (no values);
+`LICENSE` (MIT); `NOTICE` (design credits, no third-party code); `config/providers.example.json` (no keys);
+`.env.example` (no values);
 `agents/co4fe3-coder.agent.json` and `agents/co4fe3-inline.agent.json`; `scripts/save-agents.mjs`; `docs/WRITEUP.md`.
 
 ## 3. Secrets audit (paste the output; it must print nothing)
@@ -51,6 +53,12 @@ git log -p | grep -nE 'nvapi-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}' | head -5
 
 If either prints a line, **stop**. Rotate the key at the provider first, then rewrite history. Ask the human before
 any history rewrite.
+
+Provenance audit (rule 05). It must print nothing. `check-invariants.mjs` runs the same check on every verify:
+
+```bash
+git ls-files packages extensions scripts test | xargs grep -nIE 'KandD Labs|Glass Devtools|Part of V3Code' | grep -v check-invariants.mjs || true
+```
 
 ## 4. The .vsix
 

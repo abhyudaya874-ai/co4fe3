@@ -56,6 +56,20 @@ case "$path" in
 esac
 
 case "$path" in
+  # Rule 05: V3Code is a read-only reference.
+  /home/de3p/V3Code/*|*/V3Code/src/*|*/V3Code/beast/*) block "V3Code is a read-only reference (rule 05). Write the idea in co4fe3's own code instead; never edit /home/de3p/V3Code." ;;
+esac
+
+# Rule 05: no copied V3Code/Void code in the product (docs may quote names, but never a licence header).
+case "$path" in
+  *packages/*|*extensions/*|*scripts/*|*test/*)
+    if has "Copyright.{0,40}(KandD Labs|Glass Devtools)|Part of V3Code, distributed by|Licensed under the Apache License, Version 2\.0\. See LICENSE\.txt"; then
+      block "This looks like copied V3Code/Void code (it carries their licence header). co4fe3 reimplements ideas in its own code (rule 05): describe the idea, close the V3Code file, and write it fresh."
+    fi
+    ;;
+esac
+
+case "$path" in
   # Model text is data: never HTML.
   *extensions/co4fe3-vscode/webview/*)
     if has "dangerouslySetInnerHTML|\.innerHTML\s*=|\beval\("; then

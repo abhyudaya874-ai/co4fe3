@@ -32,6 +32,7 @@ docs and wire JSON are snake_case.
 | health | `client.models.list(opts)` | 3 s timeout, 0 retries |
 | list models for the picker | `client.models.list()` | record the response shape once (spike) |
 | new chat / inline edit | `client.sessions.create({ agent: { spec } }, ONCE)` | inline spec, never `{ name }` (model switching) |
+| Agent / Ask / Plan | `buildSpec(file, { mode })` → `enableTools = toolsForMode(mode)` | rule 20 trap 15, rule 50 §1 |
 | a turn | `runTurn(...)` (rule 20) | wraps `createTurnStream` + pauses + cancel |
 | answer a pause | subscribe `afterEventId` → `createTurnEvents` → read | in `runTurn` |
 | stop | `client.sessions.cancel(id, undefined, ONCE)` + abort our read | idempotent |

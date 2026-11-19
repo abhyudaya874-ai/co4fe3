@@ -18,10 +18,12 @@ tests enforce. `docs/LATENCY.md` explains how to read the numbers. The `latency-
 | Enter → `turn.created` (inline) | 400 ms | `Marks` enter→created |
 | first model delta → visible in the diff editor | 60 ms | `Marks` firstDelta→painted (proposal doc update) |
 | `turn.done` → hunks + CodeLens shown | 100 ms | `Marks` done→review |
-| Send → context pack card shown | 250 ms (index warm) | `perf agent.pack` |
+| Send → context pack card shown | 250 ms (index warm); hard cap 800 ms full + 200 ms quick (rule 40) | `perf agent.pack path=<full|quick|none>` |
+| MCP `pack_context` (LSP answering) | 400 ms | `perf mcp.pack_context` |
 | delta → painted in the panel | 50 ms | bridge batch interval (33 ms) + React commit |
 | Stop → panel shows "Stopped" | 100 ms | integration test |
 | MCP `read_file` / `find_symbol` / `repo_map` | 30 / 30 / 80 ms | handler timer, `perf mcp.<tool>` |
+| `propose_edit` handler incl. verify wait | 1,700 ms worst case (1,500 ms diagnostics wait, returns early on change) | `perf mcp.propose_edit` |
 | MCP `search_workspace` | 300 ms | same |
 | **Harness overhead, Task-A-shaped turn, fake model with zero latency** | **1.2 s** end to end | `test/integration/overhead.test.ts` |
 | **Harness overhead, scripted Task-B-shaped turn (10 tool calls, 2 reviews auto-accepted)** | **4 s** | same |
@@ -36,8 +38,11 @@ co4fe3 adds: TrueForge, MCP, review and rendering.
 1. **Inline edit is ONE model call.** No tools. The model streams the replacement for the selected lines in one
    fenced block, which the diff editor shows live. A tool loop would be 2+ calls (propose, then a final message).
 2. **Preload our editor tools** (`preload: true` on our MCP server). With deferred loading, every first use of a tool
-   costs `list_tools` → `get_tool_info` → `call_tool`, and **each is a full model round trip**. Our server has 10 small
-   tools, so preloading costs about 2k tokens and saves seconds. Any MCP server the user adds stays deferred.
+   costs `list_tools` → `get_tool_info` → `call_tool`, and **each is a full model round trip**. Our server has 11 small
+   tools, so preloading costs about 2.2k tokens and saves seconds. Any MCP server the user adds stays deferred.
+   Tools are registered **read-first**: `repo_map`, `search_workspace`, `find_symbol`, `pack_context`, `read_file`
+   first, then `propose_edit` and `run_command` (the `TOOLS` order in `runtime/modes.ts`). Models treat list
+   position as priority, and V3Code measured that a locator listed last is never used (`availableTools`).
 3. **Pre-warmed sessions.** A session is created when the inline input box opens and when the composer gets focus,
    while the user is still typing. One spare session per mode is kept ready.
 4. **The context pack in the first message** saves the agent its first 3–6 search/read round trips (rule 40).
@@ -52,6 +57,18 @@ co4fe3 adds: TrueForge, MCP, review and rendering.
    written before review. Agent mode never hedges (tools have side effects), but it falls back on a stall (rule 70).
 10. **Rendering**: events are coalesced every 33 ms and sent as snapshots keyed by id (a newer snapshot replaces the
     older one). Rows are `React.memo`. The full transcript is never re-sent.
+11. **Retrieval never holds the first token hostage** (V3Code's `retrieveWithinChatBudget`): full pack within
+    800 ms, else a lexical-only pack within 200 ms, else no pack (rule 40).
+12. **Fewer failed round trips**:
+    - `planEdit` reports every bad edit at once (rule 30);
+    - `TurnPolicy` stops repeat loops at the 5th identical call (rule 50);
+    - `pack_context` replaces 4–6 read/search calls for one symbol (rule 40).
+
+    Each failed or repeated call is a full model round trip saved.
+13. **Watchdogs, not waiting** (V3Code's stream watchdog): no first token within `stallMs`, or no event at all for
+    `IDLE_STALL_MS` (45 s) after streaming began, means the call is stalled. Agent mode falls back if nothing has run
+    yet (rule 70). The idle timer is **paused while a review waits for the user**, because a person reading a diff is
+    not a stall.
 
 ## Measured stats and model order (`agent-core/src/latency/stats.ts`)
 
@@ -87,6 +104,8 @@ export function stallMs(s: ModelStat | undefined): number {
   const p90 = s && s.ttft.length >= 3 ? percentile(s.ttft, 90)! : 6000;
   return Math.min(20_000, Math.max(8000, p90 * 2));
 }
+/** After the first token: no TrueForge event at all for this long = stalled (reset on EVERY event, paused during a review). */
+export const IDLE_STALL_MS = 45_000;
 ```
 
 `byLatency` is on for inline edit (`co4fe3.latency.autoOrderInline`, default true) and off for agent mode. There,

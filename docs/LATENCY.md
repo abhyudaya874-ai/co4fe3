@@ -50,6 +50,9 @@ Earlier measurements from UltraPals (Nov 2026, direct, not through TrueForge), f
 | Task-B-shaped turn, 10 tool calls, 0 ms model | 4 s | |
 | index build, flask | 1.5 s | |
 | rank + pack, flask, Task B prompt | 250 ms | |
+| pack path used on the first Task B send (full / quick / none) | full | |
+| `pack_context` with the Python language server | 400 ms | |
+| `propose_edit` handler incl. the verify wait | 1,700 ms | |
 
 ## Lever log (one row per experiment, from `docs/progress/09-latency.md`)
 

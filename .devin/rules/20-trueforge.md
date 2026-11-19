@@ -227,3 +227,7 @@ await client.settings.modelProviders.createOrUpdate({ manifest: {
     (rule 85).
 13. **No automatic model selection.** The roadmap lists it as planned, so fallback is ours (rule 70).
 14. **`askUserQuestions` would stall Task B on a question.** It is off in both agent definitions.
+15. **Modes are `enableTools`, not prompt text.** Ask and Plan pass the literal read-only tool names
+    (`toolsForMode`, rule 50 §1) as `enableTools`, so the model is never *shown* a gated tool. The mode tail in the
+    instructions only explains why. A new mode applies to a new session (or `sessions.update` with a new inline spec),
+    never mid-turn.

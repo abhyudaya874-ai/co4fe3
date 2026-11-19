@@ -132,12 +132,16 @@ After every successful apply, show `window.showInformationMessage("Applied 2 of 
 ## 5. A dev command to exercise it before any model exists
 
 `co4fe3.dev.sampleProposal` (only registered when `ExtensionMode.Development`) builds a proposal for the active file
-(uppercase line 2, delete line 5, append a line) and calls `review(...)`. Use it to watch the whole loop.
+(uppercase line 2, delete line 5, append a line), with `baseline: await host.problems(rel)`, and calls `review(...)`.
+Use it to watch the whole loop.
+
+Also build `review/verify.ts` (rule 30, with its tests) in this workflow. It is pure, and the propose_edit handler
+(workflow 02) and inline edit (workflow 04) both use it.
 
 ## Exit check
 
-- Unit: `hunks` (property), `edits`, `store` (`settled` resolves only when nothing is pending; `take` is one-shot;
-  `dropTurn`), `checkpoints`, `jail`, `previewLines`, all green.
+- Unit: `hunks` (property), `edits` (every `EditReject` reason), `store` (`settled` resolves only when nothing is
+  pending; `take` is one-shot; `dropTurn`), `checkpoints`, `verify`, `jail`, `previewLines`, all green.
 - Extension Development Host, on `test/fixtures/minipkg/src/minipkg/helpers.py`:
   1. Run the dev command. The diff shows 3 hunks with lenses.
   2. Accept h1, reject h2, accept h3. The file has exactly h1 and h3, and is saved.

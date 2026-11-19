@@ -15,7 +15,13 @@ df -h ~ | tail -1            # need ≥ 5 GB free
 node -v                      # ≥ 22.14
 python3 --version            # ≥ 3.9 for flask 3.1
 command -v rg jq git code    # jq is needed by the hooks; rg is optional (VS Code ships one)
+git -C /home/de3p/V3Code rev-parse --short HEAD   # the reference architecture (rule 05): expect 2eac91fb. Read-only; never build it.
+bash scripts/hooks/test-hooks.sh                  # the guards work before anything else is written
 ```
+
+If `/home/de3p/V3Code` is missing, the pack still works (`docs/study/v3code.md` holds the map). Clone it read-only
+for reference: `git clone https://github.com/HeavenFYouMissed/V3Code /home/de3p/V3Code`. If its HEAD moved past
+`2eac91fb`, re-read the files the study cites before relying on a line number.
 
 ## 2. Root files (copy exactly; versions are pinned at install time with --save-exact)
 

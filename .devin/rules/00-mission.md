@@ -30,7 +30,7 @@ If any row breaks, nothing else counts. These rows are checked first in every re
 | A1 Inline edit (10) | the diff is rendered in the editor, with per-hunk accept and reject | 03, 04 |
 | A2 Agent mode (10) | the agent discovers and edits 3+ files nobody named (Task B) | 02, 05, 07 |
 | A3 Streaming + cancel (10) | Stop cancels at once and the workspace stays consistent | 05 |
-| B1 Context (15) | retrieval within a size budget, the strategy written up, and Task B **shows which files were chosen and why** | 06 |
+| B1 Context (15) | retrieval within a size budget, the strategy written up, and Task B **shows which files were chosen and why** (pack card: reasons + per-channel RRF ranks; `pack_context` cards) | 06 |
 | B2 Diff safety (10) | per-hunk review **and a working Undo of an applied change, shown on screen** | 03 |
 | B3 Resilience (10) | **automatic fallback to a second configured model**, no user action, workspace unchanged | 08 |
 | B4 TrueForge depth (10) | MCP tools, approval driving the review, and a context-engineering feature visible in the session (subagents + deferred/preloaded tools + compaction) | 02, 07 |
@@ -53,7 +53,7 @@ Finish one row at its top anchor before starting the next.
 ## Non-goals (time spent here is time lost)
 
 Tab completion or fill-in-the-middle. Training or hosting a model. Any hosted backend, database or deployed service.
-Accounts or auth. Marketplace publishing. A Code-OSS fork (that comes after Round 1; see `docs/BACKLOG.md`).
+Accounts or auth. Marketplace publishing. A V3Code or Code-OSS fork (the co4fe3 app comes after Round 1; see `docs/BACKLOG.md`). Copying V3Code code (rule 05).
 Telemetry of any kind.
 
 ## Priorities, in order

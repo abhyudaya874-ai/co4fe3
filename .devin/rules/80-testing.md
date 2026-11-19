@@ -14,7 +14,8 @@ deterministically.
 
 | Layer | Where | Runs in | Speed | Proves |
 |---|---|---|---|---|
-| unit | `packages/agent-core/test/*.test.ts` | `verify:fast` | < 10 s total | every pure function: hunks, edits, store, ranking, pack, fallback, stats, hedge, reducer, policy, instructions |
+| unit | `packages/agent-core/test/*.test.ts` | `verify:fast` | < 10 s total | every pure function: modes, turn policy, hunks, edits, verify, store, rrf, ranking, pack, symbol pack, budget, fallback, stats, hedge, reducer, evidence, instructions |
+| hooks | `scripts/hooks/test-hooks.sh` | `verify:fast` | < 3 s | each guard blocks what it must and allows what it must (sample payloads) |
 | turn | `packages/agent-core/test/turn.test.ts` | `verify:fast` | < 1 s | `runTurn` against a fake *SDK client object*: pause ordering, cancel, resume after a drop |
 | perf | `packages/agent-core/test/perf/*.perf.test.ts` | `verify` | < 20 s | the latency budgets in rule 60, at 2× the budget |
 | integration | `test/integration/*.test.ts` | `verify` | < 90 s | real TrueForge + fake model + real MCP + temp workspace |
@@ -153,15 +154,26 @@ it("writes only the accepted hunk, and Undo restores the exact bytes", async () 
 | Workflow | Tests |
 |---|---|
 | 01 spike | `integration/roundtrip`: text streams, then `turn.done`. `integration/mcp`: TrueForge lists our tools, the model's `read_file` reaches our handler, and `tool.response` holds our output. The fake's request log is printed. |
-| 03 review core | `hunks` (property), `edits`, `store`, `checkpoints` (undo exactness), `jail` |
-| 02 MCP | `mcp-tools` (each tool through the MCP client SDK over HTTP: auth rejected without a token, jail, caps, RepeatGuard) |
-| 04 inline | `inline-parse` (partial and final fenced block), e2e `inline.test` (diff tab opens, accept writes, undo restores) |
-| 05 panel | `reducer` (replaying the same events twice gives the same state; brief/report messages; approvals), `coalesce`, `integration/cancel` (Stop during a stream → cancelled within 1 s, files unchanged; Stop during a pending review → nothing written) |
-| 06 context | `tokens`, `symbols`, `repomap` (on minipkg, the Task-B-like query ranks `cli.py`, `tests/test_cli.py` and `docs/cli.rst` in the top 5), `pack` (budget property), `mentions` |
-| 07 crew | `roles`, `policy` (commandPolicy table, RepeatGuard, crewWatch), `integration/crew` (scripted `create_sub_agent` → brief and report bubbles; a disallowed role's `propose_edit` is denied with a reason) |
-| 08 fallback | `fallback` (classify table from the spike's real strings; runWithFallback: 401 → next, 500 → retry once then next, stall → next, side effect → no retry, all fail), `integration/fallback` (provider A answers 401, provider B answers, files unchanged) |
-| 09 latency | `stats`, `hedge` (fake timer), `marks`, `perf/*`, `integration/overhead` |
-| 10 instructions | `instructions` (frontmatter, triggers, `.devin` fallback, budget overflow → index) |
+| 02 MCP | `modes` (rule 50 §1), `policy` (`TurnPolicy`: reminder at the 3rd identical call, refusal at the 5th, safety stop after 4 failures, success resets), `truncate`, `mcp-tools` (each tool through the MCP client SDK over HTTP: auth rejected without a token, a non-loopback Host rejected, jail, caps, `wrap()` bound, read-first registration order) |
+| 03 review core | `hunks` (property), `edits` (one test per `EditReject`, several bad ops in one result), `store`, `checkpoints` (undo exactness), `verify` (moved errors are not new, duplicates count, warnings ignored), `jail` |
+| 04 inline | `inline` (partial and final fenced block, phase transitions incl. `sourceChanged`), e2e `inline.test` (diff tab opens, accept writes, undo restores) |
+| 05 panel | `reducer` (replaying the same events twice gives the same state; brief/report messages; member rows merge; approvals), `coalesce`, `pause` (one review per file; later calls on that file denied with the sentence), `integration/cancel` (Stop during a stream → cancelled within 1 s, files unchanged; Stop during a pending review → nothing written; members marked `cancelled` first) |
+| 06 context | `tokens`, `symbols`, `rrf` (1st+50th beats a single 1st, empty channel, duplicates, ties), `repomap` (on minipkg, the Task-B-like query ranks `cli.py`, `tests/test_cli.py` and `docs/cli.rst` in the top 5; a missing grep channel still ranks), `budget` (`withinBudget` full/quick/none with a fake timer), `pack` (budget property), `symbolPack` (caps per task, trim order, fits `max_tokens`), `mentions` |
+| 07 crew | `evidence` (`assessMemberOutcome`: claimed edits without accepted hunks → blocked; research never blocked; failed → failed), `crewpolicy` (`commandPolicy` table, `crewWatch` hard stop at 8), `integration/crew` (scripted `create_sub_agent` → brief and report bubbles; a research member's `propose_edit` is denied with the reason) |
+| 08 fallback | `fallback` (classify table from the spike's real strings; runWithFallback: 401 → next, 500 → retry once then next, stall → next, side effect → no retry, all fail), `attempt` (first-token and idle watchdogs, no stall during a long review), `integration/fallback` (provider A answers 401, provider B answers, files unchanged) |
+| 09 latency | `stats`, `hedge` (fake timer), `marks`, `perf/*` (incl. `rankFiles` with 4 channels, `shapeSymbolPack`), `integration/overhead` |
+| 10 instructions | `frontmatter` (nested `triggers:`, block scalars), `instructions` (file order and caps, `.v3code/skills`, `activeSkills`, budget overflow → on demand) |
+
+## Test style, after V3Code
+
+V3Code keeps every policy in a pure `common/` module because "there is no DI test harness for the thread service".
+Its tests are plain `suite`/`test` with Node `assert`, and no services are faked (`test/common/localAgentRuntime.test.ts`).
+We follow the same rule with vitest:
+
+- If a decision cannot be unit-tested without the editor or the network, it is in the wrong layer. Move it into
+  agent-core and pass the I/O in.
+- A test names the behaviour and the rule it pins: `it("refuses the 5th identical call (rule 50 §2)")`.
+- The e2e tests under `@vscode/test-cli` use mocha's TDD `suite`/`test`, exactly like V3Code's.
 
 ## `npm run verify` (`scripts/verify.mjs`)
 
@@ -169,6 +181,7 @@ it("writes only the accepted hunk, and Undo restores the exact bytes", async () 
 const fast = process.argv.includes("--fast"), live = process.argv.includes("--live");
 const stages = [
   ["invariants", "node scripts/check-invariants.mjs"],
+  ["hooks", "bash scripts/hooks/test-hooks.sh"],          // the guards themselves are tested (needs jq)
   ["typecheck", "npm run typecheck"],
   ["unit", "npx vitest run --project unit"],
   ...(fast ? [] : [["perf", "npx vitest run --project perf"], ["integration", "npx vitest run --project integration"], ["build", "npm run build -w extensions/co4fe3-vscode"], ["e2e", "npx vscode-test"]]),

@@ -3,7 +3,7 @@
 | # | Wrong | Right | Why |
 |---|---|---|---|
 | 1 | `fetch("https://integrate.api.nvidia.com/v1/chat/completions", …)` in the extension | a TrueForge session with the model configured in TrueForge | eligibility gate; law 1 |
-| 2 | `import * as vscode from "vscode"` in `packages/agent-core` | an injected `EditorHost` / `Applier` | law 2; the core is reused by the Code-OSS app |
+| 2 | `import * as vscode from "vscode"` in `packages/agent-core` | an injected `EditorHost` / `Applier` | law 2; the core is reused by the co4fe3 app (V3Code fork) |
 | 3 | `await vscode.workspace.applyEdit(edit)` in `inlineEdit.ts` | `applyDecision(applier, proposal, decision)` | law 3: one writer, one checkpoint log |
 | 4 | applying hunks as the user clicks each ✓ | collect the verdicts; write once when no hunk is pending | a half-reviewed file never exists on disk |
 | 5 | `propose_edit` writes when called | it writes only the decision taken from `ReviewStore` by key | law 4; no decision = no write |
@@ -32,3 +32,14 @@
 | 28 | a key in `config/providers.json` | `${NVIDIA_API_KEY}` placeholders, filled from the environment at setup | law 7 |
 | 29 | a crew member messaging another member | brief down, report up; shared facts on the board | UltraPals rule; prevents chatter loops |
 | 30 | adding Battle/Loop/judge modes "because UltraPals had them" | not in scope | rule 00 non-goals |
+| 31 | pasting a V3Code/Void function "because it already works" | close the file; write a test from the idea; write our own code; credit it in D19 | rule 05: one declared fork point ("from scratch"); hooks block their headers |
+| 32 | a weighted score blend (`0.6 * pr + 0.4 * lex`) | `rrfMerge` over ranked channels, k = 60 | uncalibrated weights; RRF tolerates missing channels and explains itself (D8) |
+| 33 | awaiting retrieval with no limit before sending | `withinBudget(full, quick, none)` | a cold index must never delay the first token (V3Code `retrieveBudget`) |
+| 34 | two `propose_edit` reviews for one file in one pause | review the first, deny the rest with the "same step" sentence | the handlers may run in any order; the second would conflict (D21) |
+| 35 | a member row turns `completed` because `thread.done` said so | `assessMemberOutcome` on the member's own evidence | a report can claim edits that never happened (V3Code `assessWorkerOutcome`) |
+| 36 | Ask mode enforced only by telling the model "do not edit" | `enableTools = toolsForMode("ask")`, plus the pause gate | the advertised list must equal the gate (V3Code `availableTools`) |
+| 37 | `if (count > 2) refuse` scattered in handlers | `TurnPolicy.before/after` in `wrap()` | one policy object, decisions only, tested alone (V3Code `localAgentRuntime`) |
+| 38 | "the file has 14 errors" after an edit | `newErrors(baseline, after)`: only errors this edit introduced | most files already have problems; only new ones are actionable (V3Code `turboDraftVerify`) |
+| 39 | an idle timer that fires while the user reads a diff | pause the idle watchdog during `onPause` | a person reviewing is not a stall |
+| 40 | `…` truncation with no hint | `truncateWithHint(text, max, "call read_file with offset=…")` | the model must know how to get the rest |
+

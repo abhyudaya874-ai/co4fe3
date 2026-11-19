@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // npm run verify        full gate: invariants, typecheck, unit, perf, integration (real TrueForge + fake model), build, e2e.
 //                       Writes .devin/.last-verify on success (the commit hook reads it).
-// npm run verify:fast   inner loop: invariants, typecheck, unit. Does NOT write the stamp, so it can never unlock a commit.
+// npm run verify:fast   inner loop: invariants, hook self-test, typecheck, unit. Does NOT write the stamp, so it can never unlock a commit.
 // npm run verify:live   full + live latency bench + a live smoke turn (needs provider keys in the environment).
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -12,6 +12,7 @@ const live = process.argv.includes("--live");
 /** @type {[string, string][]} */
 const stages = [
   ["invariants", "node scripts/check-invariants.mjs"],
+  ["hooks", "bash scripts/hooks/test-hooks.sh"],
   ["typecheck", "npm run typecheck"],
   ["unit", "npx vitest run --project unit"],
 ];

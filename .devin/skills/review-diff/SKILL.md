@@ -26,6 +26,10 @@ Review the staged diff (`git diff --cached`; if nothing is staged, `git diff`).
 6. Is every new export and setting in CODEMAP?
 7. Do the tests prove the behaviour named in the commit (not just that it runs)?
 8. Does anything slow land on the activation path or the UI thread?
+9. Does any hunk look pasted from V3Code or Void: their headers, their names, or a function body that matches the
+   V3Code file the study cites? (rule 05; `block`)
+10. Does a new tool or mode change keep `TOOLS`, `APPROVAL`, CODEMAP and `KNOWN_TOOLS` in agreement, in read-first
+    order? (rule 50 §1)
 
 ## Output contract
 

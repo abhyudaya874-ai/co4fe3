@@ -16,11 +16,11 @@ export type PanelEvent =
   | { kind: "user"; turnId: string; text: string }
   | { kind: "text"; id: string; threadId: string; text: string; reasoning: string }            // snapshot of one model.message (same id replaces)
   | { kind: "tool"; id: string; threadId: string; name: string; args: string; state: "running" | "ok" | "error"; result?: string; ms?: number }
-  | { kind: "member"; threadId: string; title: string; role?: Role; state: "running" | "ok" | "error" }     // reducer MERGES member rows
+  | { kind: "member"; threadId: string; title: string; profile?: Profile; status: MemberStatus; reason?: string }   // reducer MERGES member rows (rule 50 §4)
   | { kind: "message"; id: string; from: string; to: string; text: string }                     // brief (to-<thread>) / report (from-<thread>)
   | { kind: "pack"; pack: ContextPack }
-  | { kind: "instructions"; inline: string[]; onDemand: number }
-  | { kind: "proposal"; key: string; path: string; why: string; by: string; adds: number; removes: number; hunks: HunkView[]; verdict: Record<string, "pending" | "accepted" | "rejected">; applied?: { checkpointId: string } }
+  | { kind: "instructions"; inline: string[]; onDemand: number; activeSkills: string[] }
+  | { kind: "proposal"; key: string; path: string; why: string; by: string; adds: number; removes: number; hunks: HunkView[]; verdict: Record<string, "pending" | "accepted" | "rejected">; applied?: { checkpointId: string; newErrors: string[] } }
   | { kind: "command"; id: string; command: string; state: "asking" | "running" | "done" | "denied"; output?: string; exit?: number | null }
   | { kind: "board"; entries: BoardEntry[] }
   | { kind: "marker"; id: string; text: string }                                                // "context compacted", "switched to …"
@@ -33,7 +33,7 @@ export type UiCommand =
   | { type: "decide"; key: string; hunkId: string; verdict: "accepted" | "rejected" } | { type: "decideAll"; key: string; verdict: "accepted" | "rejected" }
   | { type: "openDiff"; key: string } | { type: "command"; id: string; verdict: "allow" | "deny" }
   | { type: "undo"; checkpointId: string } | { type: "revertTurn"; turnId: string }
-  | { type: "openSession" } | { type: "pickModel" } | { type: "complete"; kind: "@" | "/"; prefix: string };
+  | { type: "openSession" } | { type: "pickModel" } | { type: "setMode"; mode: Mode } | { type: "complete"; kind: "@" | "/"; prefix: string };
 ```
 
 `agent-core/src/forge/fromForge.ts` maps TrueForge events to PanelEvents. It lives in `forge/`, not `panel/`, so the
@@ -119,37 +119,68 @@ async function send(text: string): Promise<void> {
   const ac = new AbortController(); this.running = ac;
   const turnKey = `t${Date.now().toString(36)}`;
   this.bridge.push({ kind: "user", turnId: turnKey, text });
-  const pack = await this.context.packFor(text);                // rule 40; ≤ 250 ms with a warm index
+  const mode = this.cfg.mode;                                   // agent | ask | plan, from the header chip (rule 50 §1)
+  const pack = await this.context.packFor(text, this.activePath(), this.recentPaths());   // rule 40: ≤ 800 ms full, else quick, else none
   this.bridge.push({ kind: "pack", pack });
-  const sel = selectInline(await this.instructions(), pack.items.map((i) => i.path));
-  this.bridge.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length });
-  const session = await this.sessions.agent(renderInstructions(LEAD, sel)); // inline-spec session, model from the router
+  const set = await this.instructions();
+  const files = pack.items.map((i) => i.path);
+  const sel = selectInline(set, files);
+  const skills = set.items.filter((i) => i.kind === "skill");
+  const active = activeSkills(set, text, files);
+  this.bridge.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length, activeSkills: active.map((s) => s.name) });
+  const session = await this.sessions.agent(renderInstructions(LEAD, sel, skills), mode);   // inline-spec session; buildSpec sets enableTools for the mode
   this.bridge.push({ kind: "status", state: "running", sessionUrl: sessionUrl(this.cfg.trueforgeUrl, session.id) });
-  const out = await this.router.agent(session, `${expandWorkflow(this.set, text).text}\n\n${renderPack(pack)}`, {
-    onEvent: (e, index) => { for (const pe of fromForge(e, index)) this.bridge.push(pe); this.watch(e, ac); },
+  const message = `${renderActiveSkills(active)}${renderPack(pack)}\n\n${expandWorkflow(set, text).text}`;   // volatile parts after the stable prefix
+  const out = await this.router.agent(session, message, {
+    onEvent: (e, index) => { for (const pe of fromForge(e, index, { mode })) this.bridge.push(pe); this.watch(e, ac); },
     onPause: makeOnPause(this.pauseDeps(turnKey)),
   }, ac.signal);
   this.review.closeTurn(turnKey);                               // drops undecided proposals (rule 30)
   this.bridge.push({ kind: "status", state: out.status === "done" ? "done" : out.status, message: out.status === "error" ? out.message : undefined });
   this.bridge.flush(); this.running = null;
 }
-stop(): void { this.bridge.push({ kind: "status", state: "stopping" }); this.bridge.flush(); this.running?.abort(); }   // UI first, then the network
+/** V3Code's abortRunning order (rule 30): UI first, then members cancelled, then the network. */
+stop(): void {
+  this.bridge.push({ kind: "status", state: "stopping" }); this.bridge.flush();
+  for (const pe of this.crew.cancelAll()) this.bridge.push(pe);   // every non-terminal member → "cancelled", before anything else
+  this.running?.abort();                                           // rejects pending reviews; runTurn calls sessions.cancel
+}
 ```
+
+When a member's `thread.done` arrives, `crew.finish(threadId, report, failed)` runs `assessMemberOutcome` (rule 50 §4)
+on that member's evidence. A `blocked` result replaces the member row's `completed` status and shows its reason. The
+header's mode chip (Agent / Ask / Plan) sends `setMode`. A new mode applies to the next session; the current one keeps
+its tools, so its prompt prefix stays stable.
 
 ## 6. Answering pauses (`extensions/…/src/panel/pause.ts`)
 
 ```ts
 export function makeOnPause(d: PauseDeps): TurnHooks["onPause"] {
-  return async (pending, _index, signal) => Promise.all(pending.map(async (p): Promise<TrueForgeApi.TurnUserEventMessage> => {
-    if (p.kind === "response") return reply(p, "This client does not support client-side tools.");
-    const tool = toolNameOf(p.call, d.serverName);               // our server only; preloaded → toolInfo.type === "mcp"
-    const member = d.crew.member(p.threadId);                    // undefined for the lead ("main")
-    if (!tool) return deny(p, "Unknown tool.");
-    if (member && !memberMayCall(member.role, tool)) return deny(p, `${member.role} members do not call ${tool}. Report what should change; the lead will do it.`);
-    if (tool === "propose_edit") return reviewEdit(d, p, member?.title ?? "lead", signal);
-    if (tool === "run_command") return approveCommand(d, p, signal);   // policy check, then a panel card with Allow / Deny
-    return allow(p);
-  }));
+  return async (pending, _index, signal) => {
+    // One review per file per pause (rule 30, V3Code "reject-conflicts"): later edits to an already-claimed path are denied.
+    const claimed = new Set<string>(), conflicts = new Set<PendingCall>();
+    for (const p of pending) {
+      if (toolNameOf(p.call, d.serverName) !== "propose_edit") continue;
+      const path = jailedPathArg(d.host.root, p.call);            // null when the args or the path are invalid (reviewEdit denies those)
+      if (path === null) continue;
+      if (claimed.has(path)) conflicts.add(p); else claimed.add(path);
+    }
+    return Promise.all(pending.map(async (p): Promise<TrueForgeApi.TurnUserEventMessage> => {
+      if (p.kind === "response") return reply(p, "This client does not support client-side tools.");
+      const tool = toolNameOf(p.call, d.serverName);             // our server only; preloaded → toolInfo.type === "mcp"
+      if (!tool) return deny(p, "Unknown tool.");
+      const member = d.crew.member(p.threadId);                  // undefined for the lead ("main")
+      if (member && !memberMayCall(member.profile, d.mode, tool))
+        return deny(p, `${member.profile} members do not call ${tool}. Report what should change and where; the lead will do it.`);
+      if (conflicts.has(p)) return deny(p, `Another edit to ${jailedPathArg(d.host.root, p.call)} was reviewed in this same step. Read the file again, then propose your remaining change.`);
+      d.crew.setStatus(p.threadId, "waiting-approval");          // shown on the member row while the user decides
+      try {
+        if (tool === "propose_edit") return await reviewEdit(d, p, member?.title ?? "lead", signal);
+        if (tool === "run_command") return await approveCommand(d, p, signal);   // commandPolicy, autoApprove.terminal, else a card with Allow / Deny
+        return allow(p);
+      } finally { d.crew.setStatus(p.threadId, "running"); }
+    }));
+  };
 }
 
 async function reviewEdit(d: PauseDeps, p: PendingCall, by: string, signal: AbortSignal) {
@@ -160,13 +191,24 @@ async function reviewEdit(d: PauseDeps, p: PendingCall, by: string, signal: Abor
   const before = await d.host.readText(rel);
   const plan = planEdit(before, (v.data.edits ?? []).map((x) => ({ oldString: x.old_string, newString: x.new_string })), v.data.content);
   if (!plan.ok) return deny(p, plan.error);                      // the model learns now; the user never sees a broken edit
-  const proposal: Proposal = { key: proposalKey(rel, v.data), turnId: d.turnKey, threadId: p.threadId, toolCallId: p.toolCallId, by, path: rel, why: v.data.why, before, after: plan.after, hunks: toHunks(before ?? "", plan.after), verdict: {} };
+  const baseline = await d.host.problems(rel);                   // verify-after-apply compares against this (rule 30)
+  const proposal: Proposal = { key: proposalKey(rel, v.data), turnId: d.turnKey, threadId: p.threadId, toolCallId: p.toolCallId, by, path: rel, why: v.data.why, before, after: plan.after, hunks: toHunks(before ?? "", plan.after), verdict: {}, baseline };
   const decision = await d.review.review(proposal, signal);      // panel card + diff editor; resolves when every hunk is decided
+  d.crew.record(p.threadId, { proposals: 1, hunksAccepted: decision.accepted.length, hunksRejected: decision.rejected.length, filesChanged: decision.accepted.length ? [rel] : [] });   // evidence (rule 50 §4)
   if (!decision.accepted.length) return deny(p, `The user rejected all ${proposal.hunks.length} hunks for ${rel}. Do not propose them again unless asked.`);
   d.sideEffect();                                                // from here a fallback retry is not allowed (rule 70)
   return allow(p);                                               // TrueForge now runs propose_edit → handler writes the accepted hunks
 }
 ```
+
+`PauseDeps` is `{ host, review, crew, serverName, mode, turnKey, sideEffect, cfg }`. `jailedPathArg(root, call)`
+parses the call's arguments with `ProposeEdit.safeParse` and returns `jail(root, path)`, or `null`. Tests
+(`pause.test.ts`, extension host, fake review controller):
+
+- two calls on `a.py` and one on `b.py` → two reviews, and one deny with the "same step" sentence;
+- a research member's `propose_edit` → denied with the profile sentence, and no review opens;
+- an all-rejected proposal → deny, and the evidence records the rejection;
+- a member is `waiting-approval` during the review and back to `running` afterwards.
 
 ## Exit check
 

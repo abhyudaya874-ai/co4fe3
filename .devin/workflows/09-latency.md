@@ -101,7 +101,12 @@ it("folds 10,000 panel events in < 400 ms", () => {
 });
 ```
 
-Also add `hunks` on a 5,000-line file in < 40 ms, and `assemblePack` in < 160 ms.
+Also add:
+- `hunks` on a 5,000-line file in < 40 ms;
+- `assemblePack` in < 160 ms;
+- `rrfMerge` over 4 × 60 ids in < 2 ms;
+- `shapeSymbolPack` with 50 callers and 200 references in < 20 ms;
+- `withinBudget` with a fake timer proving that the quick path starts exactly at `fullMs`.
 
 ## 6. Overhead with a zero-latency model (`test/integration/overhead.test.ts`)
 

@@ -106,10 +106,12 @@ export async function runWithFallback(models: readonly string[], runOn: RunOn, n
 
 `runOn` (extension, `forge/router.ts`) does three things:
 
-1. **Inline edit**: takes the pre-warmed session for `model` from the pool (one per model), runs the turn and starts
-   the stall timer (`stallMs(stats[model])`). On a stall it aborts with reason `"stall"`.
+1. **Inline edit**: takes the pre-warmed session for `model` from the pool (one per model) and runs `attemptTurn`
+   (workflow 08) with two watchdogs: first token within `stallMs(stats[model])`, then no silence longer than
+   `IDLE_STALL_MS` (paused during reviews). On a stall it aborts with reason `"stall"`.
 2. **Agent mode**: `client.sessions.update(sessionId, { agent: { spec: withModel(spec, model) } })`, then
-   `runTurn({ previousTurnId: lastFailed?.previousTurnId ?? "none" … })` on the same session (rule 20, trap 7).
+   `attemptTurn({ previousTurnId: lastFailed?.previousTurnId ?? "none" … })` on the same session (rule 20, trap 7).
+   This uses the same watchdogs. A stall before any side effect falls back; after one, the banner offers a retry.
 3. **Always**: `record()` into the stats. A failure benches the model for `failure.benchMs`, so the next request
    starts on a healthy model without waiting (UltraPals `cooldownFor`).
 

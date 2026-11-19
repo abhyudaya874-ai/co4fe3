@@ -8,7 +8,16 @@ ____ (members, college or employer, GitHub handles).
 
 ## 2. Starting point
 
-From scratch: no upstream editor code. Concepts (not code) borrowed and credited:
+From scratch: no upstream editor code. The architecture follows **V3Code** (github.com/HeavenFYouMissed/V3Code,
+Apache-2.0, an AI editor on Void and Code-OSS, studied at commit 2eac91fb). We reimplemented its ideas in our own code:
+- runtime turn policy;
+- modes and subagent profiles derived from one approval map;
+- evidence-checked workers;
+- RRF retrieval with a latency budget;
+- the LSP-backed context pack;
+- verify-against-baseline after an edit.
+
+Other concepts (not code), credited in `NOTICE`:
 - Cline: approval flow and checkpoints.
 - Continue: @-mentions and inline diff.
 - Aider: repo map and search/replace edits.
@@ -22,21 +31,25 @@ From scratch: no upstream editor code. Concepts (not code) borrowed and credited
 - **The extension is a pure TrueForge client.** It creates inline-spec sessions, streams turns through
   `createTurnStream`, answers pauses with `createTurnEvents`, and cancels with `sessions.cancel`. It never calls a
   model provider.
-- **Editor capabilities are MCP tools** on a localhost HTTP server, with a bearer token per window. The 10 tools
-  are `read_file`, `search_workspace`, `find_symbol`, `repo_map`, `propose_edit`, `run_command`, `board_read`,
-  `board_write`, `list_changes` and `load_instructions`.
+- **Editor capabilities are MCP tools** on a loopback HTTP server, with a bearer token per window. The 11 tools,
+  registered locators-first, are `repo_map`, `search_workspace`, `find_symbol`, `pack_context` (LSP-backed),
+  `read_file`, `list_changes`, `board_read`, `board_write`, `load_instructions`, `propose_edit` and `run_command`.
+  Agent, Ask and Plan modes are TrueForge `enableTools` sets derived from one approval map. Every call passes a turn
+  policy that stops repeat loops and runs of failures.
 - **TrueForge tool approval drives the review.** `propose_edit` pauses the turn. The user accepts or rejects each
   hunk, and only accepted hunks are written, with a checkpoint for Undo.
 - **Harness features used, and why:**
   - *subagents*: the lead's crew, named by the lead, with brief and report visible in the panel and the session;
-  - *deferred vs preloaded tools*: our 10 tools are preloaded to save discovery round trips, and others stay deferred;
+  - *deferred vs preloaded tools*: our 11 tools are preloaded to save discovery round trips, and others stay deferred;
   - *compaction*: at 60% of context.
 - Agent definitions: `agents/co4fe3-coder.agent.json`, `agents/co4fe3-inline.agent.json`.
 
 ## 4. How context is selected
 
 <!-- paste the strategy paragraph from rule 40, then the budget table, then one sentence on what Task B showed -->
-____ In Task B the pack chose ____ (____ / 6,000 tokens), visible at ____ in the video.
+____ In Task B the pack chose ____ (____ / 6,000 tokens; ranks shown per channel), visible at ____ in the video.
+Trade-off versus V3Code: no embeddings, so there is no semantic channel. Four cheap channels fused with RRF got the
+right files for Task B, and `pack_context` gives compiler facts on demand.
 
 ## 5. Model setup
 
@@ -71,11 +84,16 @@ coding assistants are declared here as the rules require.
 ## 8. Known limitations and what we would do with another month
 
 <!-- honest; each item one line with the consequence -->
-- Symbols come from regex, not tree-sitter, so decorators and multi-line signatures are approximate.
+- Symbols come from regex, not tree-sitter, so decorators and multi-line signatures are approximate. `pack_context`
+  uses the language server when one is installed, and falls back to that index otherwise.
+- No semantic (embedding) retrieval. V3Code fuses two embedding models with BM25; we fuse lexical, graph, grep and
+  recent channels only.
+- Repeat detection counts identical calls per turn, not batches (TrueForge owns the loop), so parallel members can
+  share the count.
 - Model fallback is client-side, because TrueForge has no automatic selection yet. A retry never happens after an
   approved edit.
 - Whether the lead delegates depends on the model, and some models do Task B alone.
 - No sandbox, so no TrueForge skills or Code Mode. Our skills load through an MCP tool instead.
 - Free tiers rate-limit: ____.
-- Next month: a Code-OSS based app with this same core, tree-sitter symbols, optional embeddings, a local sandbox
-  when TrueForge ships one, and Windows testing.
+- Next month: the co4fe3 app as a renamed V3Code fork running this same core on TrueForge (keeping V3Code's notices),
+  tree-sitter symbols, an embeddings channel, a local sandbox when TrueForge ships one, and Windows testing.

@@ -20,6 +20,8 @@ You try to break the change. You do not edit. Run the `review-diff` skill and fo
 4. **Names**: any SDK, VS Code or MCP name that is not in rule 20, CODEMAP or a `.d.ts`.
 5. **The demo**: anything that makes a judge's anchor ambiguous on screen (illegible text, a spinner with no words,
    a banner that does not name the model).
+6. **Provenance**: anything that looks pasted from V3Code or Void, such as their licence headers, `void*`/`v3code*`
+   names, or a body that matches the V3Code file the study cites. That is `block` (rule 05).
 
 ## Commands you may run
 

@@ -4,6 +4,11 @@ You are building **co4fe3**: a VS Code extension that is a coding agent whose ag
 mode. Read `AGENTS.md`, then every file in `.devin/rules/`. They are binding. A rule beats a task: if a task needs you to
 break a rule, stop and ask.
 
+The reference architecture is **V3Code** at `/home/de3p/V3Code` (read-only, Apache-2.0, built on Void). Read
+`docs/study/v3code.md` before designing anything: it maps each idea we use to the V3Code file it comes from, and says
+what we adopt, adapt or skip. Take ideas, never code (rule 05). V3Code is a full editor; co4fe3 is an extension, so
+anything that needs workbench internals is replaced by the public extension API.
+
 ## The goal, in judge terms
 
 On `pallets/flask` at tag 3.1.3 (commit 22d92470), the extension must show these on screen, in this order:
@@ -36,6 +41,7 @@ Every task runs this loop:
 
 1. **Restate** the goal and the exit check in 3 lines.
 2. **Look up** every name you will use, in `docs/CODEMAP.md`, rule 20, or the installed `.d.ts`. Never from memory.
+   For a design question, check how V3Code solved it (`docs/study/v3code.md`, then the V3Code file).
 3. **Fill the box** (rule 90): GOAL / FILES (≤ 2) / PATTERN (from docs/PATTERNS.md) / CHECK (exact command).
 4. **Build** the smallest vertical slice that runs end to end.
 5. **Verify** with real commands: `npm run verify:fast` after each edit, `npm run verify` before each commit, and the
