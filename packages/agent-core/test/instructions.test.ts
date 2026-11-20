@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadInstructions, selectInline, activeSkills, expandWorkflow, globToRegExp, renderInstructions, renderActiveSkills, type InstructionSet } from "../src/instructions/load.js";
+import { loadInstructions, selectInline, activeSkills, skillsUsed, expandWorkflow, instructionMentions, globToRegExp, renderInstructions, renderActiveSkills, type InstructionSet } from "../src/instructions/load.js";
 import type { EditorHost } from "../src/host.js";
 
 /** An EditorHost over an in-memory file map — loadInstructions reads only through the host. */
@@ -26,16 +26,50 @@ describe("loadInstructions / selectInline / activeSkills / expandWorkflow (rule 
     expect(set.sources).toContain("AGENTS.md");
   });
 
-  it(".co4fe3 wins over .devin per name; .v3code/skills is read", async () => {
+  it(".co4fe3 wins over .devin per name (rule 85: first hit wins); .v3code/skills is read", async () => {
     const set = await loadInstructions(memHost({
       ".co4fe3/rules/a.md": md("trigger: always_on", "co4fe3 rule A"),
-      ".devin/rules/a.md": md("trigger: always_on", "devin rule A — should lose the name slot? NO: both load; dedup by name is per-dir order"),
+      ".devin/rules/a.md": md("trigger: always_on", "devin rule A loses the name"),
+      ".devin/rules/b.md": md("trigger: always_on", "devin rule B"),
+      ".co4fe3/workflows/ship.md": md("description: ours", "our ship"),
+      ".devin/workflows/ship.md": md("description: theirs", "their ship"),
       ".v3code/skills/v3sk/SKILL.md": md("name: v3sk\ndescription: from v3code", "v3 skill body"),
     }));
-    const rules = set.items.filter((i) => i.kind === "rule" && i.name === "a");
-    expect(rules).toHaveLength(2);                                   // both dirs load; the rule dedups per name in selectInline order
-    expect(rules[0]!.path).toBe(".co4fe3/rules/a.md");               // .co4fe3 first (RULE_DIRS order)
+    expect(set.items.filter((i) => i.kind === "rule").map((i) => i.path)).toEqual([".co4fe3/rules/a.md", ".devin/rules/b.md"]);
+    expect(set.items.filter((i) => i.kind === "workflow").map((i) => i.body)).toEqual(["our ship"]);
+    expect(selectInline(set, []).inline.map((i) => i.body)).toEqual(["co4fe3 rule A", "devin rule B"]);   // one copy inline, never two
     expect(set.items.find((i) => i.kind === "skill")).toMatchObject({ name: "v3sk", path: ".v3code/skills/v3sk/SKILL.md" });
+  });
+
+  it("reads what Devin reads: AGENT.md, AGENTS.local.md, .devin/global_rules.md, .windsurf rules, .agents/skills", async () => {
+    const set = await loadInstructions(memHost({
+      "AGENTS.md": "root", "AGENT.md": "singular", "AGENTS.local.md": "mine", ".devin/global_rules.md": "global",
+      ".windsurf/rules/w.md": md("trigger: always_on", "windsurf rule"),
+      ".agents/skills/deploy/SKILL.md": md("name: deploy-to-production\ndescription: deploy safely", "steps"),
+      ".agents/skills/deploy/checklist.md": "supporting file, not a skill",
+    }));
+    expect(set.items.filter((i) => i.kind === "file").map((i) => i.name)).toEqual(["AGENTS.md", "AGENT.md", "AGENTS.local.md", ".devin/global_rules.md"]);
+    expect(set.items.find((i) => i.kind === "rule")?.path).toBe(".windsurf/rules/w.md");
+    expect(set.items.filter((i) => i.kind === "skill").map((i) => i.name)).toEqual(["deploy-to-production"]);   // frontmatter name; SKILL.md only
+  });
+
+  it("a sub-folder AGENTS.md applies only when the work touches that folder (Devin)", async () => {
+    const set = await loadInstructions(memHost({ "AGENTS.md": "root", "src/flask/json/AGENTS.md": "json rules", "node_modules/x/AGENTS.md": "ignored" }));
+    expect(set.items.map((i) => i.path)).toEqual(["AGENTS.md", "src/flask/json/AGENTS.md"]);
+    expect(selectInline(set, ["src/flask/app.py"]).inline.map((i) => i.path)).toEqual(["AGENTS.md"]);
+    expect(selectInline(set, ["src/flask/json/provider.py"]).inline.map((i) => i.path)).toEqual(["AGENTS.md", "src/flask/json/AGENTS.md"]);
+  });
+
+  it("@rule:name and @skill:name send that item's text with the message; /skill-name invokes a skill", async () => {
+    const set = await loadInstructions(memHost({
+      ".co4fe3/rules/style.md": md("trigger: manual\ndescription: house style", "Use type hints."),
+      ".co4fe3/skills/review/SKILL.md": md("name: review\ndescription: review a diff", "Check the tests."),
+    }));
+    const r = instructionMentions(set, "tidy app.py with @rule:style and @skill:review, not @rule:nope");
+    expect(r.loaded.map((i) => i.name)).toEqual(["style", "review"]);
+    expect(r.text).toContain('<rule name="style" path=".co4fe3/rules/style.md">\nUse type hints.\n</rule>');
+    expect(r.text).toContain("@rule:nope");
+    expect(expandWorkflow(set, "/review the last commit")).toEqual({ text: 'Use the project skill "review".\n\nCheck the tests.\n\nRequest: the last commit', workflow: "review" });
   });
 
   it("the 4,000-token budget moves overflow to onDemand", async () => {
@@ -97,5 +131,25 @@ describe("loadInstructions / selectInline / activeSkills / expandWorkflow (rule 
     expect(text).toContain("<skills_index>");
     expect(text).toContain("- sk: the skill");
     expect(renderActiveSkills(set.items.filter((i) => i.kind === "skill"))).toContain("### sk");
+  });
+});
+
+describe("skillsUsed: the skills that reach a turn, and why", () => {
+  it("lists a matched, a mentioned and a slash-invoked skill once each, and lets a workflow of the same name win", async () => {
+    const set = await loadInstructions(memHost({
+      ".co4fe3/skills/flask-cli/SKILL.md": md("name: flask-cli\ndescription: CLI conventions\nkeywords: [cli]", "Use click."),
+      ".co4fe3/skills/review/SKILL.md": md("name: review\ndescription: Review a change", "Check the tests."),
+      ".co4fe3/skills/run/SKILL.md": md("name: run\ndescription: a skill named like a workflow", "x"),
+      ".co4fe3/workflows/run.md": md("description: run tests", "Run $ARGUMENTS."),
+    }));
+    const skill = (n: string) => set.items.find((i) => i.kind === "skill" && i.name === n)!;
+    const text = "Add a CLI command";
+    const matched = skillsUsed(set, text, activeSkills(set, text, []), []);
+    expect(matched.map((u) => u.name)).toEqual(["flask-cli"]);
+    expect(matched[0]!.result).toContain("CLI conventions");
+    expect(skillsUsed(set, "/review the last commit", [], []).map((u) => [u.name, u.result])).toEqual([["review", "Review a change\nInvoked with /review."]]);
+    expect(skillsUsed(set, "see @skill:review", [], [skill("review")]).map((u) => u.name)).toEqual(["review"]);
+    expect(skillsUsed(set, "/run tests/test_cli.py", [], [])).toEqual([]);                       // the workflow, not the skill
+    expect(skillsUsed(set, "/review x @skill:review", [], [skill("review")]).map((u) => u.name)).toEqual(["review"]);   // once
   });
 });

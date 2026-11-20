@@ -36,7 +36,7 @@ function scan(files, re, message, except = [], { comments = false } = {}) {
 // The source of truth is runtime/modes.ts TOOLS (rule 50 §1); before it exists, this list.
 // Order matters: registration order is read-first (rule 60 lever 2).
 const KNOWN_TOOLS = ["repo_map", "search_workspace", "find_symbol", "pack_context", "read_file", "list_changes",
-  "board_read", "board_write", "load_instructions", "propose_edit", "run_command"];
+  "board_read", "board_write", "load_instructions", "write_plan", "propose_edit", "run_command"];
 const GATED_TOOLS = ["propose_edit", "run_command"];
 
 const TS = [".ts", ".tsx"];

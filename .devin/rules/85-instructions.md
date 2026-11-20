@@ -11,10 +11,14 @@ folder or an `AGENTS.md` works unchanged. The file list, the caps and the skill 
 
 | Kind | Found at (first hit wins per name) | Frontmatter | How it reaches the agent |
 |---|---|---|---|
-| instruction files | `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, `.cursorrules`, `.v3coderules`, `.voidrules` (in this order) | none | inline in the agent instructions. AGENTS.md is cut at 8,000 chars and the others at 4,000, with a note naming how to read the rest |
-| rules | `.co4fe3/rules/*.md`, else `.devin/rules/*.md` | `trigger`, `description`, `globs` | `always_on` → inline; `glob` → inline when a pack, mentioned or active file matches; `model_decision` → listed by description, loaded on demand; `manual` → only via `@rule:name` |
-| skills | `.co4fe3/skills/<name>/SKILL.md`, `.v3code/skills/<name>/SKILL.md`, `.devin/skills/<name>/SKILL.md` | `name`, `description`, triggers: `globs`, `keywords`, `alwaysApply`, `loadOnDemand` (top-level, or nested under `triggers:` as V3Code writes them) | all skills appear in `<skills_index>` (name, description). Matching skills go in full into `<active_skills>` in the turn message. The rest load with `load_instructions` |
-| workflows | `.co4fe3/workflows/*.md`, else `.devin/workflows/*.md` | `description`, `argument-hint` | `/name args` in the composer expands the body into the request |
+| instruction files | `AGENTS.md`, `AGENT.md`, `AGENTS.local.md`, `CLAUDE.md`, `.devin/global_rules.md`, `.github/copilot-instructions.md`, `.github/AGENTS.md`, `.cursorrules`, `.windsurfrules`, `.v3coderules`, `.voidrules` (in this order) | none | inline in the agent instructions. AGENTS.md is cut at 8,000 chars and the others at 4,000, with a note naming how to read the rest |
+| sub-folder `AGENTS.md` | `<dir>/AGENTS.md` anywhere below the root (not `node_modules`, `.venv`, …) | none | a `glob` item for `<dir>/**`: inline only when a pack, mentioned or active file is under that folder (as Devin does) |
+| rules | `.co4fe3/rules/*.md`, else `.devin/rules/*.md`, else `.windsurf/rules/*.md` | `trigger`, `description`, `globs` | `always_on` → inline; `glob` → inline when a pack, mentioned or active file matches; `model_decision` → listed by description, loaded on demand; `manual` → only via `@rule:name` |
+| skills | `.co4fe3/skills/<name>/SKILL.md`, `.v3code/skills/…`, `.devin/skills/…`, `.agents/skills/…`, `.windsurf/skills/…` (only `SKILL.md`; other files in the folder are supporting files) | `name`, `description`, triggers: `globs`, `keywords`, `alwaysApply`, `loadOnDemand` (top-level, or nested under `triggers:` as V3Code writes them) | all skills appear in `<skills_index>` (name, description). Matching skills go in full into `<active_skills>` in the turn message. The rest load with `load_instructions` |
+| workflows | `.co4fe3/workflows/*.md`, else `.devin/workflows/*.md`, else `.windsurf/workflows/*.md` | `description`, `argument-hint` | `/name args` in the composer expands the body into the request. `/skill-name` invokes a skill the same way |
+
+In the composer, `@` lists open files, files and folders, symbols, and rules, skills and workflows (`@rule:name`,
+`@skill:name`, `@workflow:name` send that item's full text with the message; `@folder/` ranks that folder's files first).
 
 ## Budgets and order (fixed, so the prompt prefix stays cacheable, rule 60 lever 7)
 

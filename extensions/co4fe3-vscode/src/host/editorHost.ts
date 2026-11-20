@@ -53,7 +53,7 @@ export function createEditorHost(ctx: vscode.ExtensionContext, out: vscode.LogOu
     listFiles: async (limit = 5000) => {
       const f = folder();
       if (!f) return [];
-      const uris = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,.venv,__pycache__,out,dist}/**", limit);
+      const uris = await vscode.workspace.findFiles("**/*", "**/{node_modules,.git,.venv,__pycache__,out,dist,.pytest_cache,.mypy_cache,.ruff_cache,.tox}/**", limit);
       return uris.map((u) => vscode.workspace.asRelativePath(u));
     },
     search: async (q, signal): Promise<SearchHit[]> => {

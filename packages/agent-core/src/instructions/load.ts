@@ -10,12 +10,24 @@ export interface Instruction {
 }
 export interface InstructionSet { items: Instruction[]; sources: string[] }    // e.g. ["AGENTS.md", ".devin", ".v3code/skills"]
 
-export const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md", ".github/AGENTS.md", ".cursorrules", ".v3coderules", ".voidrules"] as const;
+// Root files, always on, in this order. AGENT.md / AGENTS.local.md / .devin/global_rules.md / .windsurfrules are what Devin reads too.
+export const INSTRUCTION_FILES = ["AGENTS.md", "AGENT.md", "AGENTS.local.md", "CLAUDE.md", ".devin/global_rules.md", ".github/copilot-instructions.md", ".github/AGENTS.md",
+  ".cursorrules", ".windsurfrules", ".v3coderules", ".voidrules"] as const;
 export const FILE_CAP = (path: string): number => (path === "AGENTS.md" ? 8000 : 4000);   // chars
 
-const RULE_DIRS = [".co4fe3/rules", ".devin/rules"];
-const SKILL_DIRS = [".co4fe3/skills", ".v3code/skills", ".devin/skills"];
-const WORKFLOW_DIRS = [".co4fe3/workflows", ".devin/workflows"];
+// First hit wins per name (rule 85): our own folder, then Devin's, then the tools Devin imports.
+const RULE_DIRS = [".co4fe3/rules", ".devin/rules", ".windsurf/rules"];
+const SKILL_DIRS = [".co4fe3/skills", ".v3code/skills", ".devin/skills", ".agents/skills", ".windsurf/skills"];
+const WORKFLOW_DIRS = [".co4fe3/workflows", ".devin/workflows", ".windsurf/workflows"];
+const NESTED_AGENTS = /^(.+)\/AGENTS\.md$/;                         // a sub-folder's AGENTS.md applies to the files under it (Devin)
+const IGNORED_DIRS = /(^|\/)(node_modules|\.git|\.venv|venv|dist|out|build|\.pytest_cache|\.tox|\.cache)\//;
+
+const capped = (path: string, body: string): string => {
+  const cap = FILE_CAP(path);
+  return body.length > cap ? `${body.slice(0, cap)}\n[${path} truncated at ${cap} chars: call load_instructions with kind "file" and name "${path}" for the rest.]` : body;
+};
+const fileItem = (path: string, body: string, globs: string[] = []): Instruction =>
+  ({ kind: "file", name: path, path, trigger: globs.length ? "glob" : "always_on", description: globs.length ? `instructions for ${globs[0]!.replace(/\/\*\*$/, "/")}` : "", globs, keywords: [], alwaysApply: false, loadOnDemand: false, body, tokens: estimateTokens(body) });
 
 /** Reads through EditorHost only. A missing file or folder is not an error. A rule without frontmatter is a manual rule. */
 export async function loadInstructions(host: EditorHost): Promise<InstructionSet> {
@@ -25,21 +37,30 @@ export async function loadInstructions(host: EditorHost): Promise<InstructionSet
     const body = await host.readText(f);
     if (body === null) continue;
     sources.push(f);
-    const cap = FILE_CAP(f);
-    const cut = body.length > cap ? `${body.slice(0, cap)}\n[${f} truncated at ${cap} chars: call load_instructions with kind "file" and name "${f}" for the rest.]` : body;
-    items.push({ kind: "file", name: f, path: f, trigger: "always_on", description: "", globs: [], keywords: [], alwaysApply: false, loadOnDemand: false, body: cut, tokens: estimateTokens(cut) });
+    items.push(fileItem(f, capped(f, body)));
   }
+  const files = await host.listFiles(5000);                          // one listing for every folder below
+  for (const path of files) {
+    const dir = NESTED_AGENTS.exec(path)?.[1];
+    if (!dir || IGNORED_DIRS.test(path) || path.startsWith(".github/")) continue;
+    const body = await host.readText(path);
+    if (body === null) continue;
+    if (!sources.includes(path)) sources.push(path);
+    items.push(fileItem(path, capped(path, body), [`${dir}/**`]));
+  }
+  const seen = new Set<string>();
   const collect = async (dirs: readonly string[], kind: Instruction["kind"], parse: (path: string, body: string) => Instruction | null): Promise<void> => {
     for (const dir of dirs) {
-      const files = await host.listFiles(5000);
-      const inDir = files.filter((p) => p.startsWith(`${dir}/`) && p.endsWith(".md"));
+      const inDir = files.filter((p) => p.startsWith(`${dir}/`) && (kind === "skill" ? p.endsWith("/SKILL.md") : p.endsWith(".md")));
       if (!inDir.length) continue;
       if (!sources.includes(dir)) sources.push(dir);
       for (const path of inDir) {
         const body = await host.readText(path);
         if (body === null) continue;
         const it = parse(path, body);
-        if (it) items.push(it);
+        if (!it || seen.has(`${kind}:${it.name}`)) continue;         // an earlier folder already has this name
+        seen.add(`${kind}:${it.name}`);
+        items.push(it);
       }
     }
   };
@@ -54,7 +75,10 @@ export async function loadInstructions(host: EditorHost): Promise<InstructionSet
     };
   };
   await collect(RULE_DIRS, "rule", (path, body) => fromFront(path, body, "rule", path.split("/").at(-1)!.replace(/\.md$/, "")));
-  await collect(SKILL_DIRS, "skill", (path, body) => fromFront(path, body, "skill", path.split("/").at(-2)!));
+  await collect(SKILL_DIRS, "skill", (path, body) => {                // <dir>/<name>/SKILL.md; frontmatter `name` wins over the folder name
+    const named = parseFrontmatter(body).attrs.name;
+    return fromFront(path, body, "skill", typeof named === "string" && /^[\w-]+$/.test(named) ? named : path.split("/").at(-2)!);
+  });
   await collect(WORKFLOW_DIRS, "workflow", (path, body) => fromFront(path, body, "workflow", path.split("/").at(-1)!.replace(/\.md$/, "")));
   return { items, sources };
 }
@@ -65,7 +89,7 @@ export function selectInline(set: InstructionSet, files: readonly string[], budg
   let used = 0;
   for (const it of [...set.items].sort((a, b) => order(a) - order(b) || a.path.localeCompare(b.path))) {
     if (it.kind === "workflow" || it.kind === "skill" || it.trigger === "manual") continue;     // skills: index + active; workflows: typed
-    const wanted = it.kind === "file" || it.trigger === "always_on" || (it.trigger === "glob" && files.some((f) => globToRegExp(it.globs).some((g) => g.test(f))));
+    const wanted = it.trigger === "always_on" || (it.trigger === "glob" && files.some((f) => globToRegExp(it.globs).some((g) => g.test(f))));   // a sub-folder AGENTS.md is a glob item
     if (wanted && used + it.tokens <= budget) { inline.push(it); used += it.tokens; } else onDemand.push(it);
   }
   return { inline, onDemand };
@@ -111,10 +135,37 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** "/release-check v1.2" → the workflow body with $ARGUMENTS replaced, followed by the user's text. Unknown names are left alone. */
 export function expandWorkflow(set: InstructionSet, input: string): { text: string; workflow: string | null } {
   const m = /^\/([a-z0-9][\w-]*)(?:\s+([\s\S]*))?$/i.exec(input.trim());
-  const wf = m && set.items.find((i) => i.kind === "workflow" && i.name === m[1]);
-  if (!wf) return { text: input, workflow: null };
-  const args = m![2]?.trim() ?? "";
-  return { text: `Follow the project workflow "${wf.name}".\n\n${wf.body.replaceAll("$ARGUMENTS", args)}\n\nArguments: ${args || "(none)"}`, workflow: wf.name };
+  if (!m) return { text: input, workflow: null };
+  const args = m[2]?.trim() ?? "";
+  const wf = set.items.find((i) => i.kind === "workflow" && i.name === m[1]);
+  if (wf) return { text: `Follow the project workflow "${wf.name}".\n\n${wf.body.replaceAll("$ARGUMENTS", args)}\n\nArguments: ${args || "(none)"}`, workflow: wf.name };
+  const sk = set.items.find((i) => i.kind === "skill" && i.name === m[1]);   // "/skill-name" invokes a skill, as in Devin
+  if (sk) return { text: `Use the project skill "${sk.name}".\n\n${sk.body.trim()}\n\nRequest: ${args || "(apply the skill to the current task)"}`, workflow: sk.name };
+  return { text: input, workflow: null };
+}
+
+/** The skills that reach one turn and why: invoked with "/name", mentioned with "@skill:name", or matched by the request or files. One entry per skill. */
+export function skillsUsed(set: InstructionSet, input: string, active: readonly Instruction[], mentioned: readonly Instruction[]): { name: string; result: string }[] {
+  const out = new Map<string, string>();
+  const note = (s: Instruction, how: string): void => { if (!out.has(s.name)) out.set(s.name, [s.description, how].filter(Boolean).join("\n")); };
+  const slash = /^\/([a-z0-9][\w-]*)/i.exec(input.trim())?.[1];
+  const invoked = slash && !set.items.some((i) => i.kind === "workflow" && i.name === slash) ? set.items.find((i) => i.kind === "skill" && i.name === slash) : undefined;   // a workflow of that name wins (expandWorkflow)
+  if (invoked) note(invoked, `Invoked with /${invoked.name}.`);
+  for (const s of mentioned) if (s.kind === "skill") note(s, `Mentioned with @skill:${s.name}.`);
+  for (const s of active) note(s, "Matched this request (keyword, file or always-on) and was added to the turn.");
+  return [...out].map(([name, result]) => ({ name, result }));
+}
+
+const INSTR_MENTION = /@(rule|skill|workflow):([\w-]+)/g;
+/** "@rule:name", "@skill:name", "@workflow:name": that item's full text goes with this message (a manual rule's only way in, rule 85). Unknown names stay as typed. */
+export function instructionMentions(set: InstructionSet, input: string): { text: string; loaded: Instruction[] } {
+  const loaded: Instruction[] = [];
+  for (const m of input.matchAll(INSTR_MENTION)) {
+    const it = set.items.find((i) => i.kind === m[1] && i.name === m[2]);
+    if (it && !loaded.includes(it)) loaded.push(it);
+  }
+  if (!loaded.length) return { text: input, loaded };
+  return { text: `${loaded.map((i) => `<${i.kind} name="${i.name}" path="${i.path}">\n${i.body.trim()}\n</${i.kind}>`).join("\n\n")}\n\n${input}`, loaded };
 }
 
 export { truncateWithHint };

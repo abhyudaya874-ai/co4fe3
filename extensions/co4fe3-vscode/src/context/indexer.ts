@@ -70,7 +70,7 @@ export class ContextPacks {
     const budget = () => Math.min(BUDGET.packCap, this.budget());
     const full = async (): Promise<ContextPack> => {
       const ix = await this.store.ready();                        // resolves when the first build is done
-      const { pins, clean } = parseMentions(text, ix);
+      const { pins, folderFiles, clean } = parseMentions(text, ix);
       const grepHits = new Map<string, number>();
       const ac = new AbortController();
       for (const term of grepTerms(ix, clean, 3)) {              // the 3 rarest index-present request terms
@@ -78,13 +78,13 @@ export class ContextPacks {
           grepHits.set(h.path, (grepHits.get(h.path) ?? 0) + 1);
         }
       }
-      return { ...assemblePack(ix, rankFiles(ix, { text: clean, mentioned: pins.map((p) => p.path), active, recent, grepHits }), pins, budget()), path: "full" as const };
+      return { ...assemblePack(ix, rankFiles(ix, { text: clean, mentioned: [...pins.map((p) => p.path), ...folderFiles], active, recent, grepHits }), pins, budget()), path: "full" as const };
     };
     const quick = async (): Promise<ContextPack> => {
       const ix = this.store.get();
       if (!ix) throw new Error("no index");
-      const { pins, clean } = parseMentions(text, ix);
-      return { ...assemblePack(ix, rankFiles(ix, { text: clean, mentioned: pins.map((p) => p.path), active, recent }), pins, budget()), path: "quick" as const };   // no grep, no wait
+      const { pins, folderFiles, clean } = parseMentions(text, ix);
+      return { ...assemblePack(ix, rankFiles(ix, { text: clean, mentioned: [...pins.map((p) => p.path), ...folderFiles], active, recent }), pins, budget()), path: "quick" as const };   // no grep, no wait
     };
     const r = await withinBudget(full, quick, { ...EMPTY_PACK, path: "none" as const, budget: budget() }, { fullMs: BUDGET.retrieveFullMs, quickMs: BUDGET.retrieveQuickMs });
     this.out.info(`perf agent.pack path=${r.path} items=${r.value.items.length} used=${r.value.used}`);

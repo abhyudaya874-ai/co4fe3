@@ -32,6 +32,14 @@ describe("parseMentions", () => {
     expect(r.pins).toEqual([]);
   });
 
+  it("a folder mention keeps the folder in the text and ranks its files; @rule:/@skill: are left for the instructions", () => {
+    const r = parseMentions("explain @src/flask/ and use @rule:style", ix);
+    expect(r.folders).toEqual(["src/flask"]);
+    expect(r.folderFiles).toEqual(["src/flask/cli.py", "src/flask/helpers.py"]);
+    expect(r.clean).toContain("src/flask/"); expect(r.clean).not.toContain("@src/flask/");
+    expect(r.clean).toContain("@rule:style"); expect(r.unresolved).toEqual([]);
+  });
+
   it("a message with no mentions is unchanged", () => {
     const r = parseMentions("plain request, no at signs", ix);
     expect(r.clean.trim()).toBe("plain request, no at signs");

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import { applyPanelBatch, emptyChrome, emptyPanel, type ChromeState, type HostMessage, type LayoutId, type ModelRow, type PanelEvent, type PanelState, type SelectionRef, type SessionSummary, type UiCommand, type UiMode } from "@co4fe3/agent-core/panel";
+import { applyPanelBatch, emptyChrome, emptyPanel, normalizeSidebar, type ChromeState, type CompletionItem, type HostMessage, type LayoutId, type ModelRow, type PanelEvent, type PanelState, type SelectionRef, type SessionSummary, type SidebarPrefs, type UiCommand, type UiMode } from "@co4fe3/agent-core/panel";
 import { ActionsContext, type Actions } from "./actions.js";
 import { Transcript } from "./components/Transcript.js";
 import { Composer } from "./components/Composer.js";
-import { Sidebar, LayoutPill } from "./components/Sidebar.js";
+import { Sidebar, LayoutPill, ShowSidebar } from "./components/Sidebar.js";
+import { EditableTitle } from "./components/Rename.js";
 import { Empty } from "./components/Empty.js";
 import { Icon } from "./components/Icon.js";
 import { ReviewBar } from "./components/ReviewBar.js";
@@ -23,10 +24,11 @@ export function App({ post, surface }: { post: Post; surface: Surface }) {
   const [chrome, setChrome] = useState<ChromeState>(emptyChrome);
   const [sessions, setSessions] = useState<{ items: SessionSummary[]; activeId: string }>({ items: [], activeId: "" });
   const [models, setModels] = useState<{ rows: ModelRow[]; auto: boolean }>({ rows: [], auto: true });
-  const [completions, setCompletions] = useState<{ kind: "@" | "/"; items: string[] } | null>(null);
+  const [completions, setCompletions] = useState<{ kind: "@" | "/"; prefix: string; items: CompletionItem[] } | null>(null);
   const [draft, setDraft] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [resets, setResets] = useState(0);
+  const [focusTick, setFocusTick] = useState(0);                                   // bumps when the host wants the prompt box focused
 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
@@ -38,7 +40,8 @@ export function App({ post, surface }: { post: Post; surface: Surface }) {
         case "chrome": setChrome((c) => ({ ...c, ...m.chrome })); break;
         case "sessions": setSessions({ items: m.items, activeId: m.activeId }); break;
         case "models": setModels({ rows: m.rows, auto: m.auto }); break;
-        case "completions": setCompletions({ kind: m.kind, items: m.items }); break;
+        case "completions": setCompletions({ kind: m.kind, prefix: m.prefix, items: m.items }); break;
+        case "focusComposer": if (m.text) setDraft((d) => (d ? `${d}\n${m.text}` : m.text!)); setFocusTick((n) => n + 1); break;
       }
     };
     window.addEventListener("message", onMessage);
@@ -55,6 +58,8 @@ export function App({ post, surface }: { post: Post; surface: Surface }) {
     openFile: (path, line) => post({ type: "openFile", path, ...(line ? { line } : {}) }),
     command: (id, verdict) => post({ type: "command", id, verdict }),
     undo: (checkpointId) => post({ type: "undo", checkpointId }),
+    plan: (id, verdict) => post({ type: "plan", id, verdict }),
+    openPlan: (id) => post({ type: "openPlan", id }),
   }), [post]);
 
   // Stay at the bottom while text streams, unless the person scrolled up to read; then offer a jump button.
@@ -79,24 +84,44 @@ export function App({ post, surface }: { post: Post; surface: Surface }) {
 
   const empty = s.order.length === 0;
   const review = useMemo(() => pendingReview(s.order.map((r) => r.e)), [s]);
+  const lastPack = useMemo(() => { for (let i = s.order.length - 1; i >= 0; i--) { const e = s.order[i]!.e; if (e.kind === "pack") return e.pack; } return null; }, [s]);
   const onSend = useCallback((text: string, attach?: SelectionRef) => {
     stuck.current = true;
     post({ type: "send", text, ...(attach ? { attach } : {}) });
   }, [post]);
   const clearCompletions = useCallback(() => setCompletions(null), []);
   const onLayout = useCallback((layout: LayoutId) => post({ type: "setLayout", layout }), [post]);
+  const onNew = useCallback(() => post({ type: "newSession" }), [post]);
+  const onSwitch = useCallback((id: string) => post({ type: "switchSession", id }), [post]);
+  const onDelete = useCallback((id: string) => post({ type: "deleteSession", id }), [post]);
+  const onRename = useCallback((id: string, title: string) => post({ type: "renameSession", id, title }), [post]);
+  const onPin = useCallback((id: string, pinned: boolean) => post({ type: "pinSession", id, pinned }), [post]);
+  const onArchive = useCallback((id: string, archived: boolean) => post({ type: "archiveSession", id, archived }), [post]);
+  const onPrefs = useCallback((patch: Partial<SidebarPrefs>) => {
+    setChrome((c) => ({ ...c, sidebar: normalizeSidebar(patch, c.sidebar) }));       // shown at once; the host saves it and confirms
+    post({ type: "setSidebar", prefs: patch });
+  }, [post]);
+  const active = sessions.items.find((x) => x.id === sessions.activeId);             // a new, empty session is not in the list yet
+  const rename = active ? (title: string) => onRename(active.id, title) : undefined;
 
   return (
     <ActionsContext.Provider value={actions}>
       <div className={`app ${surface}`}>
-        {surface === "agent" && (
-          <Sidebar sessions={sessions.items} activeId={sessions.activeId} chrome={chrome} now={now}
-            onNew={() => post({ type: "newSession" })} onSwitch={(id) => post({ type: "switchSession", id })} onDelete={(id) => post({ type: "deleteSession", id })} onLayout={onLayout} />
+        {surface === "agent" && !chrome.sidebar.hidden && (
+          <Sidebar sessions={sessions.items} activeId={sessions.activeId} chrome={chrome} now={now} onNew={onNew} onSwitch={onSwitch} onDelete={onDelete}
+            onRename={onRename} onPin={onPin} onArchive={onArchive} onPrefs={onPrefs} onLayout={onLayout} />
         )}
         <main className="main">
+          {surface === "agent" && chrome.sidebar.hidden && (
+            <header className="dock-top">
+              <ShowSidebar onShow={() => onPrefs({ hidden: false })} />
+              <EditableTitle className="dock-title" title={active?.title ?? "New session"} onRename={rename} />
+              <LayoutPill layout="agent" onLayout={onLayout} />
+            </header>
+          )}
           {surface === "dock" && (
             <header className="dock-top">
-              <span className="dock-title">{sessions.items.find((x) => x.id === sessions.activeId)?.title ?? "New session"}</span>
+              <EditableTitle className="dock-title" title={active?.title ?? "New session"} onRename={rename} />
               <LayoutPill layout="editor" onLayout={onLayout} />
             </header>
           )}
@@ -109,18 +134,17 @@ export function App({ post, surface }: { post: Post; surface: Surface }) {
           <div className="bottom">
             <div className="column">
               <ReviewBar {...review} />
-              <Composer chrome={chrome} models={models} draft={draft} setDraft={setDraft} completions={completions} clearCompletions={clearCompletions}
+              <Composer chrome={chrome} models={models} draft={draft} setDraft={setDraft} completions={completions} clearCompletions={clearCompletions} usage={s.usage} pack={lastPack}
                 onSend={onSend} onStop={() => post({ type: "stop" })} onFocus={() => post({ type: "focus" })}
                 onComplete={(kind, prefix) => post({ type: "complete", kind, prefix })}
-                onMode={(mode: UiMode) => post({ type: "setMode", mode })} onModel={(name) => post({ type: "setModel", name })} onModelsOpen={() => post({ type: "models" })} />
-              <div className="foot-chips">
-                <span className="foot-chip" title="Runs through TrueForge on this machine"><Icon name="bolt" size={12} />Local</span>
-                {chrome.folder && <span className="foot-chip" title="The workspace folder"><Icon name="folder" size={12} />{chrome.folder}</span>}
-                <button type="button" className={`foot-chip${chrome.sessionUrl ? " link" : ""}`} aria-disabled={!chrome.sessionUrl} onClick={() => { if (chrome.sessionUrl) post({ type: "openSession" }); }}
-                  title={chrome.sessionUrl ? "Open this conversation in TrueForge" : chrome.trueforge === "connected" ? "TrueForge is connected" : "TrueForge is not connected yet"}>
-                  <span className={`dot ${chrome.trueforge}`} aria-hidden="true" />TrueForge
-                </button>
-              </div>
+                onMode={(mode: UiMode) => post({ type: "setMode", mode })} onModel={(name) => post({ type: "setModel", name })} onModelsOpen={() => post({ type: "models" })} onDetach={() => post({ type: "detach" })} focusTick={focusTick} />
+              {chrome.sessionUrl && (
+                <div className="foot-chips">
+                  <button type="button" className="foot-chip link" onClick={() => post({ type: "openSession" })} title="Open this conversation in TrueForge">
+                    <span className={`dot ${chrome.trueforge}`} aria-hidden="true" />TrueForge
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </main>

@@ -1,12 +1,13 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { HubStore, PersistedSession, SessionSummary } from "@co4fe3/agent-core/panel";
+import { normalizeSummary, summaryOf, type HubStore, type PersistedSession, type SessionSummary } from "@co4fe3/agent-core/panel";
 
 /** Ids come from the webview (switchSession, deleteSession): only this shape ever reaches a file name. */
 export const isSessionId = (id: unknown): id is string => typeof id === "string" && /^[a-z0-9][a-z0-9-]{3,39}$/.test(id);
 
-const KEEP = 40;                                                  // newest sessions kept per workspace
+const KEEP = 40;                                                  // newest sessions kept per workspace (pinned ones are kept on top of these)
+const MAX_PINNED = 100;
 
 /**
  * Transcripts as one JSON file each, plus a small index so the sidebar lists without parsing them.
@@ -25,8 +26,8 @@ export class FileSessionStore implements HubStore {
     if (this.index) return this.index;
     try {
       mkdirSync(this.dir, { recursive: true });
-      const raw = JSON.parse(readFileSync(this.indexFile(), "utf8")) as { items?: SessionSummary[] };
-      this.index = (raw.items ?? []).filter((s) => isSessionId(s.id) && typeof s.title === "string" && typeof s.updatedAt === "number").map((s) => ({ ...s, running: false }));
+      const raw = JSON.parse(readFileSync(this.indexFile(), "utf8")) as { items?: unknown[] };
+      this.index = (raw.items ?? []).map(normalizeSummary).filter((s): s is SessionSummary => s !== null && isSessionId(s.id));   // entries from older builds get defaults
     } catch { this.index = []; }                                  // first run or a damaged index: start empty, files stay on disk
     return this.index;
   }
@@ -43,10 +44,11 @@ export class FileSessionStore implements HubStore {
 
   put(s: PersistedSession): void {
     if (!isSessionId(s.id)) return;
-    const items = this.items().filter((x) => x.id !== s.id);
-    items.unshift({ id: s.id, title: s.title, updatedAt: s.updatedAt, running: false });
-    items.sort((a, b) => b.updatedAt - a.updatedAt);
-    const dropped = items.splice(KEEP);
+    const all = this.items().filter((x) => x.id !== s.id);
+    all.unshift(summaryOf(s));
+    all.sort((a, b) => b.updatedAt - a.updatedAt);
+    const keep = new Set([...all.filter((x) => x.pinned).slice(0, MAX_PINNED).map((x) => x.id), ...all.filter((x) => !x.pinned).slice(0, KEEP).map((x) => x.id)]);   // the newest KEEP, and every pinned one
+    const items = all.filter((x) => keep.has(x.id)), dropped = all.filter((x) => !keep.has(x.id));
     this.index = items;
     this.queue(async () => {
       mkdirSync(this.dir, { recursive: true });

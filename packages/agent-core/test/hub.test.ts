@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Hub, type HubPort, type HubStore } from "../src/panel/hub.js";
-import type { HostMessage, PersistedSession, SessionSummary } from "../src/panel/protocol.js";
+import { summaryOf, type HostMessage, type PersistedSession, type SessionSummary } from "../src/panel/protocol.js";
 import type { PanelEvent } from "../src/panel/events.js";
 
 const memoryStore = (): HubStore & { data: Map<string, PersistedSession> } => {
   const data = new Map<string, PersistedSession>();
   return {
     data,
-    list: () => [...data.values()].map((s): SessionSummary => ({ id: s.id, title: s.title, updatedAt: s.updatedAt, running: false })),
+    list: () => [...data.values()].map((s): SessionSummary => summaryOf(s)),
     load: async (id) => data.get(id) ?? null,
     put: (s) => { data.set(s.id, structuredClone(s)); },
     remove: (id) => { data.delete(id); },
@@ -162,3 +162,68 @@ describe("Hub sessions", () => {
     expect(hub.proposal("nope")).toBeUndefined();
   });
 });
+
+describe("Hub session list actions", () => {
+  const stored = (id: string, over: Partial<PersistedSession> = {}): PersistedSession => ({ v: 1, id, title: id, createdAt: 1, updatedAt: 50, events: [user(`first message of ${id}`)], preview: `first message of ${id}`, turns: 1, ...over });
+
+  it("renaming the active session keeps the name when the first message arrives, and is written with the session", () => {
+    const { hub, store } = make();
+    expect(hub.summaries()).toEqual([]);
+    hub.push(user("a long first message that would have been the title"));
+    void hub.update(hub.activeId, { title: "Redirects" });
+    expect(hub.summaries()[0]).toMatchObject({ title: "Redirects", renamed: true, turns: 1 });
+    vi.advanceTimersByTime(1600);
+    expect(store.data.get(hub.activeId)).toMatchObject({ title: "Redirects", renamed: true });
+  });
+
+  it("a name chosen BEFORE the first message is not replaced by it", () => {
+    const { hub } = make();
+    void hub.update(hub.activeId, { title: "Mine" });
+    hub.push(user("something else entirely"));
+    expect(hub.summaries()[0]!.title).toBe("Mine");
+  });
+
+  it("renaming, pinning and archiving a stored session changes the entry, not its time", async () => {
+    const { hub, store } = make();
+    store.put(stored("old-one"));
+    expect(await hub.update("old-one", { title: "Kept", pinned: true })).toBe(true);
+    expect(store.data.get("old-one")).toMatchObject({ title: "Kept", renamed: true, pinned: true, updatedAt: 50 });
+    expect(await hub.update("old-one", { archived: true })).toBe(true);
+    expect(store.data.get("old-one")).toMatchObject({ pinned: false, archived: true, updatedAt: 50 });
+    expect(await hub.update("old-one", { title: "" })).toBe(true);
+    expect(store.data.get("old-one")).toMatchObject({ title: "first message of old-one", renamed: false });
+  });
+
+  it("an unknown session is reported, not invented", async () => {
+    const { hub } = make();
+    expect(await hub.update("nope-1234", { pinned: true })).toBe(false);
+  });
+
+  it("the list is told when something changes", async () => {
+    const { hub, store } = make(); const a = port(); hub.attach(a);
+    store.put(stored("s-one"));
+    a.got.length = 0;
+    await hub.update("s-one", { pinned: true });
+    const m = a.got.find((x) => x.type === "sessions");
+    expect(m && m.type === "sessions" && m.items.find((i) => i.id === "s-one")?.pinned).toBe(true);
+  });
+
+  it("switching to a stored session brings its pin, archive and name with it; a new session starts plain", async () => {
+    const { hub, store } = make();
+    store.put(stored("s-two", { title: "Named", renamed: true, pinned: true }));
+    hub.push(user("active one")); hub.push({ kind: "status", state: "done" });
+    expect(await hub.switchTo("s-two")).toBe(true);
+    expect(hub.summaries().find((s) => s.id === "s-two")).toMatchObject({ title: "Named", renamed: true, pinned: true });
+    hub.newSession();
+    hub.push(user("fresh"));
+    expect(hub.summaries().find((s) => s.id === hub.activeId)).toMatchObject({ pinned: false, archived: false, renamed: false });
+  });
+
+  it("the active session reports its messages and applied changes", () => {
+    const { hub } = make();
+    hub.push(user("one")); hub.push(user("two", "t2"));
+    hub.push({ kind: "proposal", key: "k", path: "a.py", why: "w", by: "lead", adds: 1, removes: 0, hunks: [], verdict: {}, applied: { checkpointId: "c", newErrors: [] } });
+    expect(hub.summaries()[0]).toMatchObject({ turns: 2, edits: 1, preview: "one" });
+  });
+});
+

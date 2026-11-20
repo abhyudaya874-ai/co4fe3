@@ -1,4 +1,5 @@
 import type { IconName } from "../format.js";
+import logoUrl from "../logo.png?inline";
 
 // Small stroke icons on a 16 px grid, drawn for this UI. Inline SVG: nothing to load, so the strict CSP has nothing to allow.
 const PATHS: Record<IconName, string> = {
@@ -31,6 +32,13 @@ const PATHS: Record<IconName, string> = {
   layers: "M8 2l6 3-6 3-6-3zM2 8l6 3 6-3M2 11l6 3 6-3",
   book: "M3 3h4.5A1.5 1.5 0 0 1 9 4.5V13a1.5 1.5 0 0 0-1.5-1.5H3zM13 3H8.5A1.5 1.5 0 0 0 7 4.5V13a1.5 1.5 0 0 1 1.5-1.5H13z",
   bolt: "M9 2L3.5 9H8l-1 5 5.5-7H8z",
+  pin: "M5.5 2.5h5M6.5 2.5v4L4.5 9h7l-2-2.5v-4M8 9v4.5",
+  filter: "M2 3.5h12L9.5 9v4l-3 1.5V9z",
+  sort: "M5 13V3M2.5 5.5L5 3l2.5 2.5M11 3v10M8.5 10.5L11 13l2.5-2.5",
+  archive: "M2 3.5h12v3H2zM3 6.5v6.5h10V6.5M6.5 9h3",
+  panelLeft: "M2.5 3h11v10h-11zM6.5 3v10",
+  dots: "M3.5 8h.5M7.75 8h.5M12 8h.5",
+  group: "M2.5 3.5h4v3h-4zM2.5 9.5h4v3h-4zM8.5 5h5M8.5 11h5",
 };
 const FILLED: ReadonlySet<IconName> = new Set<IconName>(["stop"]);
 
@@ -44,14 +52,9 @@ export function Icon({ name, size = 14, className }: { name: IconName; size?: nu
   );
 }
 
-/** The co4fe3 mark: a ring with a notch. */
+/** The co4fe3 logo (the latte). `?inline` embeds the PNG as a data URI, which the strict CSP already allows (`img-src data:`). */
 export function Logo({ size = 18 }: { size?: number }) {
-  return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-      <circle cx="8" cy="8" r="6" />
-      <path d="M5.4 8a2.6 2.6 0 1 1 2.6 2.6" />
-    </svg>
-  );
+  return <img className="logo" src={logoUrl} width={size} height={size} alt="" aria-hidden="true" draggable={false} />;
 }
 
 export function Spinner({ size = 14 }: { size?: number }) {

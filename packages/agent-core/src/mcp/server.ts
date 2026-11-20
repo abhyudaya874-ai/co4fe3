@@ -16,7 +16,7 @@ import { commandPolicy } from "../crew/policy.js";
 import type { Board } from "../crew/board.js";
 import type { RepoIndex } from "../context/repomap.js";
 import type { InstructionSet } from "../instructions/load.js";
-import { ProposeEdit, ProposeEditShape, RunCommandShape, proposalKey } from "./schemas.js";
+import { ProposeEdit, ProposeEditShape, RunCommandShape, WritePlan, WritePlanShape, proposalKey } from "./schemas.js";
 import { extractSymbols } from "../context/symbols.js";
 import { extractHoverSignature, renderSymbolPack, shapeSymbolPack, type PackTask, type SymbolFacts } from "../context/symbolPack.js";
 import { rankFiles } from "../context/repomap.js";
@@ -31,6 +31,8 @@ export interface McpDeps {
   /** A command is about to run: returns where its output goes while it runs (the chat's command card), or undefined. */
   onCommand?(command: string): { output(textSoFar: string): void; done(): void } | undefined;
   onApplied?(a: { key: string; path: string; checkpointId: string; newErrors: string[]; accepted: number; total: number }): void;
+  /** write_plan was called: show the plan card. Returns a refusal the model reads (e.g. "not in Plan mode"), or undefined when shown. */
+  onPlan?(p: WritePlan): string | undefined;
 }
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: true };
 export const MAX_RESULT_CHARS = 60_000;                                 // ≈ 15k tokens; V3Code's boundMcpText ceiling
@@ -173,6 +175,17 @@ export function createEditorMcpServer(d: McpDeps): McpServer {
       throw new ToolInputError(`No ${kind} named "${name}". Available: ${names || "(none yet)"}`);
     }
     return text(truncateWithHint(`# ${kind}: ${it.name}\n${it.body}`, 40_000, "Ask for a narrower skill."));
+  }));
+
+  s.registerTool("write_plan", {
+    title: "Write the plan for the user to accept",
+    description: "Plan mode only. WHEN: you have investigated and know what to change. Shows your plan to the user as a card with Accept and Reject; on Accept, Code mode starts and implements it. Call it once, at the end, then stop with one short sentence. Calling it again replaces this turn's plan.",
+    inputSchema: WritePlanShape,
+    annotations: ro,
+  }, wrap("write_plan", async (raw) => {
+    const refused = d.onPlan?.(WritePlan.parse(raw));
+    if (refused) throw new ToolInputError(refused);
+    return text("The plan is shown to the user. Stop now: end your turn with one short sentence. Do not call propose_edit or run_command; the user accepts the plan or asks for changes.");
   }));
 
   s.registerTool("propose_edit", {

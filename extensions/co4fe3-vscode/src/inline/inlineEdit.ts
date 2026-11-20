@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { EditorHost, Proposal, Problem, Decision, ApplyResult, FileEntry } from "@co4fe3/agent-core";
-import { jail, splitLines, selectedLines, toHunks, extractFence, streamingPreview, assembleInline, buildInlinePrompt, PhaseBox, pickProblems, newErrors, BUDGET, Marks, fallbackBanner, type Failure, type Note, type InlinePhase } from "@co4fe3/agent-core";
+import { jail, splitLines, selectedLines, looksLikeProse, toHunks, extractFence, streamingPreview, assembleInline, buildInlinePrompt, PhaseBox, pickProblems, newErrors, BUDGET, Marks, fallbackBanner, type Failure, type Note, type InlinePhase } from "@co4fe3/agent-core";
 import type { ReviewController } from "../review/controller.js";
 import type { Router } from "../forge/router.js";
 import type { SessionPool } from "../forge/sessions.js";
@@ -92,6 +92,7 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
       phase.to("drafting");
       let acc = "", lastPaint = 0;
       let firstFail: { model: string; failure: Failure } | null = null;
+      const skipped = d.router.skippedAhead("inline");              // benched by an earlier failure: skipped with no new failure, so name it in the banner
       const res = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "co4fe3", cancellable: true }, async (progress, token) => {
         token.onCancellationRequested(() => ac.abort());
         return d.router.inline(prompt, {
@@ -104,8 +105,9 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
           },
           onNote: (n: Note) => {
             if (n.kind === "failed" && !firstFail) firstFail = { model: n.model, failure: n.failure };
-            if (n.kind === "answered" && n.fellBack && firstFail)
-              void vscode.window.showWarningMessage(fallbackBanner(firstFail.model, firstFail.failure, n.model));   // rule 70: names the failure + who answered
+            const why = firstFail ?? skipped;
+            if (n.kind === "answered" && why && (n.fellBack || !firstFail) && n.model !== why.model)
+              void vscode.window.showWarningMessage(fallbackBanner(why.model, why.failure, n.model));   // rule 70: names the failure + who answered
           },
         }, ac.signal);
       });
@@ -124,6 +126,7 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
       if (doc.version !== version) return void finish("sourceChanged", "The file changed while drafting. Nothing was changed; run the edit again.");
       const f = extractFence(res.output, true);
       if (!f?.code.trim()) return void finish("error", "The model returned no code. Nothing was changed.");
+      if (looksLikeProse(res.output)) return void finish("error", "The model answered in words instead of returning code. Nothing was changed. Try rephrasing the instruction.");
       const after = assembleInline(before, start, end, f.code);
       if (after === before) return void finish("noChanges", "The model proposed no change.");
       const hunks = toHunks(before, after);

@@ -63,3 +63,17 @@ export function fromForge(e: TfEvent, index: EventIndex, ctx: { mode: Mode; serv
       return [];
   }
 }
+
+/**
+ * The context meter's numbers: what one model call of the lead used. TrueForge streams a message as a `model.message` followed by
+ * `model.message.delta`s, and the usage rides on the LAST DELTA (seen on a real run: the `model.message` itself has none). A message
+ * that arrives whole carries it on the `model.message`. Crew members have their own context, so their threads are skipped.
+ */
+export function usageFromForge(e: TfEvent, ctx: { turnId: string; model: string; window: number | null; skipThreads?: ReadonlySet<string> }): Extract<PanelEvent, { kind: "usage" }> | null {
+  if ((e.type !== "model.message" && e.type !== "model.message.delta") || !e.usage || ctx.skipThreads?.has(e.threadId)) return null;
+  const u = e.usage;
+  return {
+    kind: "usage", turnId: ctx.turnId, model: ctx.model, inputTokens: u.inputTokens, outputTokens: u.outputTokens,
+    ...(u.cacheReadTokens !== undefined ? { cacheReadTokens: u.cacheReadTokens } : {}), window: ctx.window, breakdown: { ...u.inputTokensBreakdown },
+  };
+}

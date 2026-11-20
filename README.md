@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/co4fe3.png" alt="co4fe3 logo" width="160"></p>
+
 # co4fe3 — a VS Code coding agent on TrueForge
 
 co4fe3 is a VS Code extension whose agent loop runs entirely on **TrueForge local mode** (`npx @truefoundry/trueforge`

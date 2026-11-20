@@ -6,6 +6,17 @@ export interface PackItem { path: string; why: string[]; tokens: number; text: s
 export interface ContextPack { items: PackItem[]; used: number; budget: number; skipped: { path: string; why: string }[]; path: "full" | "quick" | "none" }
 export const EMPTY_PACK: ContextPack = { items: [], used: 0, budget: 0, skipped: [], path: "none" };
 
+// "hi", "thanks", "yes, go ahead": no code question, so no repo map. The session's history carries a follow-up.
+const SMALL_TALK = /^(hi+|hello|hey+|yo|sup|hiya|thanks?|thank you|thx|ty|ok(ay)?|k|cool|nice|great|good( (morning|afternoon|evening|night))?|bye|yes|yep|yeah|no|nope|sure|go( ahead)?|do it|continue|proceed|carry on|stop|wait|who are you|what can you do|how are you)$/i;
+/** Whether a message gets a context pack. Mentions or an attached selection always do; small talk and one-word follow-ups do not. */
+export function wantsPack(text: string, attached = false): boolean {
+  if (attached || /@[\w.]/.test(text)) return true;
+  const t = text.trim().replace(/[\s!?.,:;)(*~-]+$/g, "").replace(/^[\s,]+/, "").replace(/\s+/g, " ");
+  if (!t) return false;
+  const parts = t.replace(/\b(please|pls)\b/gi, "").split(/[,;!.]+/).map((p) => p.trim()).filter(Boolean);   // "yes, go ahead please"
+  return !parts.length ? false : !parts.every((p) => SMALL_TALK.test(p));
+}
+
 export const outlineOf = (f: FileEntry, max = 40): string =>
   f.syms.slice(0, max).map((s) => `L${s.line}`.padEnd(6) + (s.parent ? "    " : "") + s.sig).join("\n") + (f.syms.length > max ? `\n… ${f.syms.length - max} more symbols` : "");
 

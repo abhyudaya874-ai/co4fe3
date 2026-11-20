@@ -71,7 +71,7 @@ export class AgentWindow {
     const panel = vscode.window.createWebviewPanel(AgentWindow.id, "co4fe3", { viewColumn: vscode.ViewColumn.One, preserveFocus: false }, {
       enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media],
     });
-    panel.iconPath = vscode.Uri.joinPath(media, "icon.svg");
+    panel.iconPath = vscode.Uri.joinPath(media, "icon.png");
     panel.webview.html = webviewHtml(panel.webview, this.ctx.extensionUri, "agent");
     const port = portOf(panel.webview);
     const off = this.attach(port);

@@ -2,7 +2,8 @@ import type { HunkView, ModelRow, PanelEvent } from "@co4fe3/agent-core/panel";
 
 export type IconName =
   | "plus" | "slash" | "chevronDown" | "chevronRight" | "check" | "x" | "arrowUp" | "arrowDown" | "stop" | "file" | "terminal" | "search"
-  | "edit" | "sparkle" | "shield" | "clock" | "expand" | "collapse" | "trash" | "alert" | "link" | "folder" | "brain" | "tool" | "users" | "undo" | "layers" | "book" | "bolt";
+  | "edit" | "sparkle" | "shield" | "clock" | "expand" | "collapse" | "trash" | "alert" | "link" | "folder" | "brain" | "tool" | "users" | "undo" | "layers" | "book" | "bolt"
+  | "pin" | "filter" | "sort" | "archive" | "panelLeft" | "dots" | "group";
 
 const parse = (args: string): Record<string, unknown> => {
   try { const v: unknown = JSON.parse(args); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; }
@@ -28,7 +29,13 @@ export function toolLabel(name: string, args: string): { verb: string; target: s
     case "list_changes": return { verb: "List changes", target: "", icon: "clock" };
     case "board_read": return { verb: "Read the board", target: str(a, "key"), icon: "users" };
     case "board_write": return { verb: "Note on the board", target: str(a, "key"), icon: "users" };
-    case "load_instructions": return { verb: "Load", target: [str(a, "kind"), str(a, "name")].filter(Boolean).join(" "), icon: "book" };
+    case "load_instructions": {                                          // the agent pulled a skill, rule or file in on its own
+      const kind = str(a, "kind"), name = str(a, "name");
+      return kind === "skill" ? { verb: "Used skill", target: name, icon: "bolt" }
+        : kind === "rule" ? { verb: "Read rule", target: name, icon: "book" }
+        : { verb: "Read instructions", target: name, icon: "book" };
+    }
+    case "use_skill": return { verb: "Used skill", target: str(a, "name"), icon: "bolt" };   // a skill that matched this request (a panel row, not an MCP tool)
     case "propose_edit": return { verb: "Edit", target: str(a, "path"), icon: "edit" };
     case "run_command": return { verb: "Command", target: str(a, "command"), icon: "terminal" };
     case "create_sub_agent": return { verb: "Start a subagent", target: str(a, "name") || str(a, "title"), icon: "users" };
@@ -37,7 +44,7 @@ export function toolLabel(name: string, args: string): { verb: string; target: s
 }
 
 /** Tools whose own card shows the work (the command card, the diff card). Their tool row is a quiet one-liner or hidden. */
-export const hasOwnCard = (name: string): boolean => ["run_command"].includes(bareToolName(name));
+export const hasOwnCard = (name: string): boolean => ["run_command", "write_plan"].includes(bareToolName(name));
 
 /** "src/flask/cli.py" → { dir: "src/flask/", base: "cli.py" } */
 export function splitPath(p: string): { dir: string; base: string } {

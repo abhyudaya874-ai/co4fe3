@@ -31,6 +31,7 @@ export * from "./context/symbolPack.js";
 export * from "./context/repomap.js";
 export * from "./context/pack.js";
 export * from "./context/mentions.js";
+export * from "./context/complete.js";
 export * from "./crew/policy.js";
 export * from "./crew/board.js";
 export * from "./crew/evidence.js";

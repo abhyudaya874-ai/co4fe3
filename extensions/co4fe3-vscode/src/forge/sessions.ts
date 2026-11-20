@@ -30,11 +30,11 @@ export async function registerEditorServer(getClient: () => TrueForge, name: str
   }
 }
 
-/** Builds the AgentSpec for a session. `project` is the rendered project rules and AGENTS.md, appended to the lead's own instructions. */
+/** Builds the AgentSpec for a session. `project` is the rendered project rules and AGENTS.md, placed before the lead's own instructions. */
 export type SpecFor = (mode: "inline" | "agent" | "ask" | "plan", model: string, project?: string) => AgentSpec;
 
 /** What a chat session was built from. The same values mean the TrueForge session needs no update. */
-export interface ChatWant { project: string; instr: string; mode: Mode; model: string }
+export interface ChatWant { project: string; instr: string; mode: Mode; model: string; title?: string }   // title: names a NEW TrueForge session (UpdateSessionRequest.title)
 
 /** Pre-warmed sessions, one spare per (mode, model), created while the user is still typing (rule 60, lever 3). */
 export class SessionPool {
@@ -79,7 +79,7 @@ export class SessionPool {
       } catch { /* the session cannot be changed: continue the transcript on a new one */ }
     }
     const s = await this.take("agent", want.model);                      // warm spare, or a fresh create (take retries once)
-    await this.getClient().sessions.update(s.id, { agent: { spec } }, ONCE).catch(() => undefined);   // the spare's own spec is an acceptable fallback
+    await this.getClient().sessions.update(s.id, { agent: { spec }, ...(want.title ? { title: want.title } : {}) }, ONCE).catch(() => undefined);   // the spare's own spec is an acceptable fallback
     this.known.add(s.id);
     return { sessionId: s.id, model: want.model, mode: want.mode, instr: want.instr };
   }

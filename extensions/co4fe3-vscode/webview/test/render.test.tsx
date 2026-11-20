@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { renderToString as ssr } from "react-dom/server";
 import type { ReactNode } from "react";
-import { applyPanelBatch, emptyPanel, emptyChrome, type PanelEvent, type ModelRow } from "@co4fe3/agent-core/panel";
+import { applyPanelBatch, emptyPanel, emptyChrome, type PanelEvent, type ModelRow, type CompletionItem } from "@co4fe3/agent-core/panel";
 import { Transcript } from "../src/components/Transcript.js";
 import { Composer } from "../src/components/Composer.js";
 import { Sidebar } from "../src/components/Sidebar.js";
@@ -29,10 +29,12 @@ const FIXTURES: { [K in PanelEvent["kind"]]: Extract<PanelEvent, { kind: K }> } 
   ], verdict: { h1: "accepted", h2: "pending" }, applied: undefined },
   command: { kind: "command", id: "cmd-1", command: "pytest -q", state: "asking", output: "ok", exit: 0 },
   board: { kind: "board", entries: [{ key: "api.name", value: "Flask", by: "scout", at: 1 }] },
+  plan: { kind: "plan", id: "t1", turnId: "t1", title: "Doc comment for TracebackType (app.py:10)", summary: "Add a one-line comment above the import.", body: "1. `src/flask/app.py:10`: add the comment.\n2. Verify with `python -c 'import flask'`.", state: "proposed" },
   marker: { kind: "marker", id: "m", text: "context compacted" },
   model: { kind: "model", note: { kind: "failed", model: "nvidia-nim/nemotron-super", failure: { kind: "auth", benchMs: 600000, retrySame: false, detail: "HTTP 403: Forbidden" }, next: "google-gemini/gemini-flash-lite" } },
   latency: { kind: "latency", line: "perf ttft=689 total=8130 model=nvidia-nim/nemotron-super" },
   status: { kind: "status", state: "error", message: "boom" },
+  usage: { kind: "usage", turnId: "t1", model: "nvidia-nim/nemotron-super", inputTokens: 46_000, outputTokens: 400, cacheReadTokens: 30_000, window: 262_144, breakdown: { harness: 900, instructions: 5200, messages: 36_000, skills: 300, toolDefinitions: 3600 } },
 };
 
 /** Server rendering separates adjacent text nodes with comments; the text a person reads has none. */
@@ -88,6 +90,14 @@ describe("what the cards say", () => {
     const html = view([{ kind: "model", note: { kind: "answered", model: "google-gemini/gemini-flash-lite", fellBack: true } }]);
     expect(html).toContain("<span>Answered by <strong>google-gemini/gemini-flash-lite</strong> (the first model failed).</span>");
   });
+  it("a plan card shows the plan file, title and steps, with Accept and Reject until decided (as in Devin)", () => {
+    const h = view([FIXTURES.plan]);
+    expect(h).toContain("plan-t1.md"); expect(h).toContain("Doc comment for TracebackType"); expect(h).toContain("Accept"); expect(h).toContain("Reject");
+    expect(view([FIXTURES.plan], true)).toContain("Waiting for the turn to finish");
+    const done = view([{ ...FIXTURES.plan, state: "accepted" }]);
+    expect(done).toContain("Implementing in Code mode"); expect(done).not.toContain("plan-ask");
+    expect(view([FIXTURES.plan, { kind: "tool", id: "c9", threadId: "main", name: "write_plan", args: "{}", state: "ok" }])).not.toContain("tool-head");   // the card replaces the tool row
+  });
   it("a command that asks shows the command with Allow and Deny", () => {
     const h = view([{ kind: "command", id: "cmd-1", command: "pytest -q", state: "asking" }]);
     expect(h).toContain("Allow"); expect(h).toContain("Deny"); expect(h).toContain("pytest -q"); expect(h).toContain(">pytest<");
@@ -142,15 +152,32 @@ describe("the rest of the chat renders", () => {
     { name: "nvidia-nim/nemotron-super", provider: "nvidia-nim", short: "nemotron-super", p50Ms: 740, ok: 4, failed: 0, benchedMin: null, contextLength: 131072, recent: true },
     { name: "google-gemini/gemini-flash-lite", provider: "google-gemini", short: "gemini-flash-lite", p50Ms: null, ok: 0, failed: 1, benchedMin: 5, contextLength: 1048576, recent: false },
   ];
-  const chrome = { ...emptyChrome(), model: "nvidia-nim/nemotron-super", mode: "bypass" as const, folder: "flask", trueforge: "connected" as const, selection: { path: "src/a.py", start: 3, end: 9 } };
-  const props = { chrome, models: { rows, auto: true }, draft: "", setDraft: () => undefined, completions: { kind: "@" as const, items: ["src/flask/app.py", "symbol:Flask"] }, clearCompletions: () => undefined, onSend: () => undefined, onStop: () => undefined, onFocus: () => undefined, onComplete: () => undefined, onMode: () => undefined, onModel: () => undefined, onModelsOpen: () => undefined };
+  const chrome = { ...emptyChrome(), model: "nvidia-nim/nemotron-super", mode: "bypass" as const, folder: "flask", trueforge: "connected" as const, attached: { path: "src/a.py", start: 3, end: 9 } };
+  const items: CompletionItem[] = [
+    { kind: "file", label: "app.py", detail: "src/flask", insert: "src/flask/app.py", group: "Open files" },
+    { kind: "folder", label: "flask/", detail: "src", insert: "src/flask/", group: "Files & folders" },
+    { kind: "symbol", label: "Flask", detail: "src/flask/app.py:109", insert: "symbol:Flask", group: "Symbols" },
+    { kind: "rule", label: "style", detail: "rule · how we write Python", insert: "rule:style", group: "Rules & skills" },
+  ];
+  const props = { chrome, models: { rows, auto: true }, draft: "look at @app", setDraft: () => undefined, completions: { kind: "@" as const, prefix: "app", items }, clearCompletions: () => undefined, onSend: () => undefined, onStop: () => undefined, onFocus: () => undefined, onComplete: () => undefined, onMode: () => undefined, onModel: () => undefined, onModelsOpen: () => undefined, onDetach: () => undefined, focusTick: 0 };
   it("the composer: the selection chip, the mode, the model, completions", () => {
     const html = renderToString(<Composer {...props} />);
-    expect(html).toContain("a.py#L3-9"); expect(html).toContain("Bypass Permissions"); expect(html).toContain("nemotron-super"); expect(html).toContain("@src/flask/app.py");
+    expect(html).toContain("a.py#L3-9"); expect(html).toContain("Bypass Permissions"); expect(html).toContain("nemotron-super");
+    for (const g of ["Open files", "Files &amp; folders", "Symbols", "Rules &amp; skills"]) expect(html).toContain(g);
+    expect(html).toContain("app.py"); expect(html).toContain("flask/"); expect(html).toContain("how we write Python");
+    expect(renderToString(<Composer {...props} completions={{ ...props.completions, prefix: "ap" }} />)).not.toContain("Open files");   // a reply for an older token is not shown
+  });
+  it("selecting text alone never puts a chip in the prompt box; only an attached selection does", () => {
+    const none = renderToString(<Composer {...props} chrome={{ ...chrome, attached: null }} />);
+    expect(none).not.toContain("a.py#L3-9"); expect(none).not.toContain("attach-chip");
+    const some = renderToString(<Composer {...props} />);
+    expect(some).toContain("a.py#L3-9"); expect(some).toContain("Remove the attached selection");
   });
   it("the composer while busy offers Stop", () => { expect(renderToString(<Composer {...props} chrome={{ ...chrome, busy: true }} />)).toContain('aria-label="Stop"'); });
   it("the sidebar lists sessions with their age", () => {
-    const html = renderToString(<Sidebar sessions={[{ id: "s1", title: "Fix the redirect", updatedAt: 0, running: false }]} activeId="s1" chrome={chrome} now={51 * 60_000} onNew={() => undefined} onSwitch={() => undefined} onDelete={() => undefined} onLayout={() => undefined} />);
+    const none = (): void => undefined;
+    const row = { id: "s1", title: "Fix the redirect", updatedAt: 0, running: false, createdAt: 0, pinned: false, archived: false, renamed: false, model: "", turns: 1, edits: 0, preview: "" };
+    const html = renderToString(<Sidebar sessions={[row]} activeId="s1" chrome={chrome} now={51 * 60_000} onNew={none} onSwitch={none} onDelete={none} onRename={none} onPin={none} onArchive={none} onPrefs={none} onLayout={none} />);
     expect(html).toContain("Fix the redirect"); expect(html).toContain("51 minutes ago"); expect(html).toContain("New session");
   });
   it("the empty state, in both shapes", () => {
@@ -160,6 +187,22 @@ describe("the rest of the chat renders", () => {
   it("the menus render closed (their open state needs a browser)", () => {
     expect(renderToString(<ModeMenu mode="plan" onMode={() => undefined} />)).toContain("Plan");
     expect(renderToString(<ModelMenu current="" rows={[]} auto onPick={() => undefined} onOpen={() => undefined} />)).toContain("No model");
+  });
+});
+
+describe("the context meter (Devin's ring)", () => {
+  it("is hidden until TrueForge reported usage; then the ring says how full the window is", async () => {
+    const { ContextMeter, kTokens } = await import("../src/components/ContextMeter.js");
+    expect(renderToString(<ContextMeter usage={null} pack={null} />)).toBe("");
+    const h = renderToString(<ContextMeter usage={FIXTURES.usage} pack={null} />);
+    expect(h).toContain('aria-label="18% (46K / 262K) context used"');
+    expect([kTokens(812), kTokens(2863), kTokens(46_400), kTokens(262_144)]).toEqual(["812", "2.9K", "46K", "262K"]);
+    expect(renderToString(<ContextMeter usage={{ ...FIXTURES.usage, inputTokens: 230_000 }} pack={null} />)).toContain("ctx-meter bad");
+    expect(renderToString(<ContextMeter usage={{ ...FIXTURES.usage, window: null }} pack={null} />)).toContain("46K tokens in context");
+  });
+  it("the reducer keeps only the latest usage, outside the transcript rows", () => {
+    const st = applyPanelBatch(emptyPanel(), [FIXTURES.usage, { ...FIXTURES.usage, inputTokens: 50_000 }]);
+    expect(st.usage?.inputTokens).toBe(50_000); expect(st.order).toHaveLength(0);
   });
 });
 

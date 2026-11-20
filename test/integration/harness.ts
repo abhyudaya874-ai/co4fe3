@@ -106,6 +106,7 @@ async function startTestMcp(host: EditorHost, applier: Applier, review: ReviewSt
   return await startMcpHttp(() => createEditorMcpServer(deps), () => undefined);
 }
 
+/** Serial per harness: `fake-${n}` / `co4fe3-test-${n}` must not collide on the shared TrueForge. */
 let harnessN = 0;
 
 export async function startHarness(script: Script): Promise<Harness> {

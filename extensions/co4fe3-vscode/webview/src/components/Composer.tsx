@@ -1,9 +1,21 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { selectionLabel, type ChromeState, type ModelRow, type SelectionRef, type UiMode } from "@co4fe3/agent-core/panel";
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { selectionLabel, type ChromeState, type CompletionItem, type ModelRow, type PanelEvent, type SelectionRef, type UiMode } from "@co4fe3/agent-core/panel";
+import type { IconName } from "../format.js";
 import { Icon } from "./Icon.js";
 import { ModeMenu, ModelMenu } from "./menus.js";
+import { ContextMeter } from "./ContextMeter.js";
 
-const ACTIVE_TOKEN = /(^|\s)(@[\w./-]*|\/[\w-]*)$/;
+const ACTIVE_TOKEN = /(^|\s)(@[\w./:-]*|\/[\w-]*)$/;                 // matched against the text BEFORE the caret
+const ICON: Record<CompletionItem["kind"], IconName> = { file: "file", folder: "folder", symbol: "sparkle", rule: "book", skill: "bolt", workflow: "slash" };
+
+/** The "@" or "/" token that ends at the caret, or null. "/" counts only at the very start of the message. */
+export function tokenAt(text: string, caret: number): { kind: "@" | "/"; prefix: string; start: number } | null {
+  const m = ACTIVE_TOKEN.exec(text.slice(0, caret));
+  if (!m) return null;
+  const tok = m[2]!, start = m.index + (m[1]?.length ?? 0);
+  if (tok.startsWith("/") && start !== 0) return null;
+  return { kind: tok[0] as "@" | "/", prefix: tok.slice(1), start };
+}
 
 const placeholderFor = (mode: UiMode, busy: boolean): string =>
   busy ? "Working… stop it with the red button" :
@@ -16,7 +28,7 @@ export interface ComposerProps {
   models: { rows: readonly ModelRow[]; auto: boolean };
   draft: string;
   setDraft(v: string): void;
-  completions: { kind: "@" | "/"; items: string[] } | null;
+  completions: { kind: "@" | "/"; prefix: string; items: CompletionItem[] } | null;
   clearCompletions(): void;
   onSend(text: string, attach?: SelectionRef): void;
   onStop(): void;
@@ -25,6 +37,13 @@ export interface ComposerProps {
   onMode(m: UiMode): void;
   onModel(name: string | null): void;
   onModelsOpen(): void;
+  /** The person removed the attached selection. */
+  onDetach(): void;
+  /** Bumps when the chat was opened for a selection (Chat, Ctrl+L): focus the box. */
+  focusTick: number;
+  /** The context ring: the lead's last model call, and this conversation's latest context pack. */
+  usage?: Extract<PanelEvent, { kind: "usage" }> | null;
+  pack?: Extract<PanelEvent, { kind: "pack" }>["pack"] | null;
 }
 
 /** The input card: a growing text box, the editor selection as a chip, and the mode, model and send controls along its bottom edge. */
@@ -32,13 +51,13 @@ export const Composer = memo(function Composer(p: ComposerProps) {
   const { chrome, draft, setDraft, completions } = p;
   const ta = useRef<HTMLTextAreaElement>(null);
   const [cursor, setCursor] = useState(0);
-  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [token, setToken] = useState<ReturnType<typeof tokenAt>>(() => tokenAt(draft, draft.length));
+  const list = useRef<HTMLDivElement>(null);
   const busy = chrome.busy;
 
-  // The selection chip: shown while the editor has a selection, until the user dismisses that exact selection.
-  const sel = chrome.selection;
-  const selKey = sel ? `${sel.path}:${sel.start}-${sel.end}` : null;
-  const chip = sel && selKey !== dismissed ? sel : null;
+  // The selection chip: only what the person sent with Chat (Ctrl+L). Selecting text alone never puts anything here.
+  const chip = chrome.attached;
+  useEffect(() => { if (p.focusTick > 0) ta.current?.focus(); }, [p.focusTick]);
 
   useLayoutEffect(() => {
     const el = ta.current;
@@ -55,16 +74,26 @@ export const Composer = memo(function Composer(p: ComposerProps) {
     setDraft("");
     p.clearCompletions();
   };
-  const onDraft = (v: string) => {
+  const onDraft = (v: string, caret = v.length) => {
     setDraft(v);
-    const m = ACTIVE_TOKEN.exec(v);                                     // "@" anywhere, "/" only at the start
-    if (m && (m[2]!.startsWith("@") || (m[2]!.startsWith("/") && m.index === 0))) p.onComplete(m[2]!.slice(0, 1) as "@" | "/", m[2]!.slice(1));
+    const t = tokenAt(v, caret);                                        // "@" anywhere, "/" only at the start
+    setToken(t);
+    if (t) p.onComplete(t.kind, t.prefix);
     else p.clearCompletions();
   };
-  const items = completions?.items.slice(0, 8) ?? [];
-  const pickCompletion = (item: string) => {
-    const m = ACTIVE_TOKEN.exec(draft);
-    if (m) setDraft(`${draft.slice(0, m.index)}${m[1] ?? ""}${completions?.kind ?? "@"}${item} `);
+  // A reply for an older token (the user kept typing) is not shown: the newer reply follows.
+  const items = completions && token && completions.kind === token.kind && completions.prefix === token.prefix ? completions.items : [];
+  useLayoutEffect(() => { list.current?.querySelector(".completion.cur")?.scrollIntoView({ block: "nearest" }); }, [cursor]);
+  const pickCompletion = (item: CompletionItem) => {
+    if (token) {
+      const end = token.start + 1 + token.prefix.length;
+      const rest = draft.slice(end);
+      const next = `${draft.slice(0, token.start)}${token.kind}${item.insert}${rest.startsWith(" ") ? "" : " "}${rest}`;
+      setDraft(next);
+      const caret = token.start + 1 + item.insert.length + 1;
+      requestAnimationFrame(() => ta.current?.setSelectionRange(caret, caret));
+    }
+    setToken(null);
     p.clearCompletions();
     ta.current?.focus();
   };
@@ -81,17 +110,23 @@ export const Composer = memo(function Composer(p: ComposerProps) {
     const next = token === "/" ? (draft.startsWith("/") ? draft : `/${draft}`) : `${draft}${draft && !/\s$/.test(draft) ? " " : ""}@`;
     onDraft(next);
     ta.current?.focus();
+    ta.current?.setSelectionRange(next.length, next.length);
   };
 
   return (
     <div className="composer-wrap">
       {items.length > 0 && (
-        <div className="completions" role="listbox" aria-label={completions?.kind === "@" ? "Files and symbols" : "Workflows"}>
+        <div className="completions" ref={list} role="listbox" aria-label={completions?.kind === "@" ? "Files, folders, symbols, rules and skills" : "Workflows and skills"}>
           {items.map((it, i) => (
-            <button key={it} type="button" role="option" aria-selected={i === cursor} className={`completion${i === cursor ? " cur" : ""}`} onMouseDown={(ev) => { ev.preventDefault(); pickCompletion(it); }}>
-              <Icon name={completions?.kind === "@" ? (it.startsWith("symbol:") ? "sparkle" : "file") : "slash"} size={12} />
-              <span>{completions?.kind}{it}</span>
-            </button>
+            <Fragment key={`${it.kind}:${it.insert}`}>
+              {(i === 0 || items[i - 1]!.group !== it.group) && <div className="completion-group" role="presentation">{it.group}</div>}
+              <button type="button" role="option" aria-selected={i === cursor} className={`completion ${it.kind}${i === cursor ? " cur" : ""}`} title={`${token?.kind ?? ""}${it.insert}`}
+                onMouseDown={(ev) => { ev.preventDefault(); pickCompletion(it); }} onMouseMove={() => { if (i !== cursor) setCursor(i); }}>
+                <Icon name={ICON[it.kind]} size={13} />
+                <span className="completion-label">{it.label}</span>
+                {it.detail && <span className="completion-detail">{it.detail}</span>}
+              </button>
+            </Fragment>
           ))}
         </div>
       )}
@@ -100,12 +135,12 @@ export const Composer = memo(function Composer(p: ComposerProps) {
           <div className="chips">
             <span className="attach-chip" title={`${chip.path} lines ${chip.start}-${chip.end}`}>
               <Icon name="file" size={12} />{selectionLabel(chip)}
-              <button type="button" className="chip-x" aria-label="Do not attach the selection" onClick={() => setDismissed(selKey)}><Icon name="x" size={11} /></button>
+              <button type="button" className="chip-x" aria-label="Remove the attached selection" onClick={p.onDetach}><Icon name="x" size={11} /></button>
             </span>
           </div>
         )}
         <textarea ref={ta} rows={1} value={draft} placeholder={placeholderFor(chrome.mode, busy)} aria-label="Message the agent" spellCheck={false}
-          onFocus={p.onFocus} onChange={(e) => onDraft(e.target.value)} onKeyDown={onKeyDown} />
+          onFocus={p.onFocus} onChange={(e) => onDraft(e.target.value, e.target.selectionStart ?? e.target.value.length)} onKeyDown={onKeyDown} />
         <div className="composer-bar">
           <div className="bar-left">
             <button type="button" className="icon-btn round" onClick={() => insert("@")} title="Mention a file or symbol" aria-label="Mention a file or symbol"><Icon name="plus" size={14} /></button>
@@ -115,6 +150,7 @@ export const Composer = memo(function Composer(p: ComposerProps) {
             <ModeMenu mode={chrome.mode} onMode={p.onMode} />
             <ModelMenu current={chrome.model} rows={p.models.rows} auto={p.models.auto} onPick={p.onModel} onOpen={p.onModelsOpen} />
           </div>
+          <ContextMeter usage={p.usage ?? null} pack={p.pack ?? null} />
           <button type="button" className={`send${busy ? " stop" : ""}`} onClick={busy ? p.onStop : submit} disabled={!busy && !draft.trim()}
             aria-label={busy ? "Stop" : "Send"} title={busy ? "Stop" : "Send (Enter)"}>
             <Icon name={busy ? "stop" : "arrowUp"} size={busy ? 12 : 15} />

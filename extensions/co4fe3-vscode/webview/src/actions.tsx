@@ -8,9 +8,11 @@ export interface Actions {
   openFile(path: string, line?: number): void;
   command(id: string, verdict: "allow" | "deny"): void;
   undo(checkpointId: string): void;
+  plan(id: string, verdict: "accept" | "reject"): void;
+  openPlan(id: string): void;
 }
 
 const none = (): void => undefined;
-export const NO_ACTIONS: Actions = { decide: none, decideAll: none, openDiff: none, openFile: none, command: none, undo: none };
+export const NO_ACTIONS: Actions = { decide: none, decideAll: none, openDiff: none, openFile: none, command: none, undo: none, plan: none, openPlan: none };
 export const ActionsContext = createContext<Actions>(NO_ACTIONS);
 export const useActions = (): Actions => useContext(ActionsContext);

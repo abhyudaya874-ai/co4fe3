@@ -73,3 +73,11 @@ describe("renderPack / outlineOf", () => {
     expect(out).toContain("more symbols");
   });
 });
+
+describe("wantsPack: small talk gets no repo map", () => {
+  it("greetings, thanks and one-word follow-ups get none; a code request, a mention or a selection gets one", async () => {
+    const { wantsPack } = await import("../src/context/pack.js");
+    for (const t of ["hi", "Hi!", "hiii", "hello", "thanks", "thank you!", "ok", "yes", "yes, go ahead", "go ahead please", "do it", "continue", "how are you?", "  "]) expect(wantsPack(t), t).toBe(false);
+    for (const t of ["add a comment to View", "why does dispatch_request fail", "hi, fix the redirect bug", "look at @app.py", "yes"]) expect(wantsPack(t, t === "yes"), t).toBe(true);
+  });
+});

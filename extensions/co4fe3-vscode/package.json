@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "co4fe3",
   "license": "MIT",
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -16,7 +17,7 @@
     "commands": [
       {
         "command": "co4fe3.inlineEdit",
-        "title": "Edit selection",
+        "title": "Edit selection with co4fe3",
         "category": "co4fe3"
       },
       {
@@ -174,6 +175,16 @@
         "title": "Close",
         "category": "co4fe3",
         "icon": "$(close)"
+      },
+      {
+        "command": "co4fe3.chatSelection",
+        "title": "Add selection to the chat",
+        "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.explainSelection",
+        "title": "Explain selection",
+        "category": "co4fe3"
       }
     ],
     "keybindings": [
@@ -213,6 +224,23 @@
         "command": "co4fe3.toggleLayout",
         "key": "ctrl+alt+j",
         "mac": "cmd+alt+j"
+      },
+      {
+        "command": "co4fe3.inlineEdit",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus && !editorReadonly && !co4fe3.inlineBusy"
+      },
+      {
+        "command": "co4fe3.chatSelection",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "editor.action.submitComment",
+        "key": "enter",
+        "when": "commentEditorFocused && commentController == co4fe3-inline && commentThread != co4fe3.review"
       }
     ],
     "menus": {
@@ -462,6 +490,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "In Editor mode, open an edit the agent proposes as a diff in the editor right away, with Accept and Reject on it. Nothing is written until you accept."
+        },
+        "co4fe3.editor.selectionWidget": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show Edit, Chat and Explain next to selected text. The selection is only sent to the chat when you choose Chat."
         }
       }
     },

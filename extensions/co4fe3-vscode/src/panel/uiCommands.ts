@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
-import { jail, modelRows, type EditorHost, type Applier, type InstructionSet, type RepoIndex } from "@co4fe3/agent-core";
-import type { Hub, HostMessage, UiMode, LayoutId } from "@co4fe3/agent-core/panel";
+import { jail, modelRows, completeMention, completeSlash, type EditorHost, type Applier, type InstructionSet, type RepoIndex } from "@co4fe3/agent-core";
+import type { Hub, HostMessage, UiMode, LayoutId, SidebarPrefs } from "@co4fe3/agent-core/panel";
 import type { AgentTurns } from "./agentTurn.js";
 import type { CommandHandler } from "./panelView.js";
 import type { ReviewController } from "../review/controller.js";
@@ -9,6 +9,7 @@ import type { Router } from "../forge/router.js";
 import type { SessionPool } from "../forge/sessions.js";
 import type { ModelCatalog } from "../forge/catalog.js";
 import { proposalUri } from "../review/proposalDocs.js";
+import { findPlan, implementPlanMessage, planUri } from "./planDocs.js";
 
 export interface UiCommandDeps {
   host: EditorHost;
@@ -20,13 +21,20 @@ export interface UiCommandDeps {
   sessions: SessionPool;
   catalog: ModelCatalog;
   index(): RepoIndex | null;
-  instructionItems(): InstructionSet["items"];
+  /** Resolves after any pending reload, so a workflow created while the window was open shows up on the first "/". */
+  instructionItems(): Promise<InstructionSet["items"]>;
+  /** Every workspace file (cached, refreshed on create/delete/rename), for the "@" menu. */
+  files(): readonly string[];
+  /** The active editor, the other visible editors, then this session's edited files: the "@" menu's "Open files". */
+  openPaths(): string[];
   /** Allow / Deny answers from command cards, keyed by card id. */
   pendingCommands: Map<string, (v: "allow" | "deny") => void>;
   setUiMode(m: UiMode): void;
   enterLayout(l: LayoutId): Promise<void>;
   /** After the active session changed (new, switched, deleted): clear the crew board, refresh the TrueForge link. */
   afterSessionChange(): void;
+  /** The sessions sidebar's width, sort, group and filter: validated, remembered, and sent to every window. */
+  setSidebar(p: Partial<SidebarPrefs>): void;
   modelsMessage(): HostMessage;
   log(line: string): void;
 }
@@ -45,7 +53,8 @@ export function createUiCommands(d: UiCommandDeps): CommandHandler {
         d.hub.hello(from.port);
         from.port.post(d.modelsMessage());
         break;
-      case "send": void d.turns.send(m.text, m.attach); break;
+      case "send": void d.turns.send(m.text, m.attach); if (d.hub.chrome.attached) d.hub.setChrome({ attached: null }); break;   // the attachment goes with the message that used it
+      case "detach": d.hub.setChrome({ attached: null }); break;                                                              // the person removed the chip
       case "stop": d.turns.stop(); break;
       case "focus": { const model = d.router.order("agent")[0]; if (model) d.sessions.warm("agent", model); break; }   // lever 3: warm a spare while the user types
       case "decide": {
@@ -78,6 +87,15 @@ export function createUiCommands(d: UiCommandDeps): CommandHandler {
       }
       case "undo": void d.applier.undo(m.checkpointId); break;
       case "revertTurn": void vscode.commands.executeCommand("co4fe3.revertTurn", m.turnId); break;
+      case "plan": {                                                     // Accept: Code mode implements the plan in a new turn (edits are still reviewed)
+        const p = findPlan(d.hub, m.id);
+        if (!p || p.state !== "proposed") break;
+        if (d.hub.chrome.busy) { d.log(`plan ${m.verdict} refused: busy`); break; }
+        d.hub.push({ ...p, state: m.verdict === "accept" ? "accepted" : "rejected" });
+        if (m.verdict === "accept") { d.setUiMode("code"); void d.turns.send(implementPlanMessage(p), undefined, `Implement the plan: ${p.title}`); }
+        break;
+      }
+      case "openPlan": if (findPlan(d.hub, m.id)) void inEditor(() => vscode.window.showTextDocument(planUri(m.id), { preview: true })); break;
       case "openSession": { const url = d.hub.chrome.sessionUrl; if (url) void vscode.env.openExternal(vscode.Uri.parse(url)); break; }
       case "pickModel": void vscode.commands.executeCommand("co4fe3.pickModel"); break;
       case "setMode": d.setUiMode(m.mode); break;
@@ -86,21 +104,19 @@ export function createUiCommands(d: UiCommandDeps): CommandHandler {
       case "newSession": if (d.hub.newSession()) d.afterSessionChange(); else d.log(`newSession refused: busy=${d.hub.chrome.busy}`); break;
       case "switchSession": void d.hub.switchTo(m.id).then((ok) => { if (ok) d.afterSessionChange(); else d.log(`switchSession ${m.id} refused: busy=${d.hub.chrome.busy}`); }); break;
       case "deleteSession": if (d.hub.remove(m.id)) d.afterSessionChange(); break;
+      case "renameSession": void d.hub.update(m.id, { title: m.title }).then((ok) => { if (!ok) d.log(`renameSession ${m.id}: no such session`); }); break;
+      case "pinSession": void d.hub.update(m.id, { pinned: m.pinned }); break;
+      case "archiveSession": void d.hub.update(m.id, { archived: m.archived }); break;
+      case "setSidebar": d.setSidebar(m.prefs); break;
       case "setLayout": void d.enterLayout(m.layout); break;
       case "complete": {
-        const pfx = m.prefix.toLowerCase();
-        const items: string[] = [];
-        if (m.kind === "@") {
-          const ix = d.index();                                       // files first, then symbols, ≤ 20 (rule 40)
-          if (ix) {
-            const files = [...ix.byPath.keys()].filter((p) => p.toLowerCase().includes(pfx)).sort((a, b) => a.length - b.length || a.localeCompare(b));
-            const syms = [...ix.defs.keys()].filter((n) => n.toLowerCase().includes(pfx)).sort();
-            items.push(...files, ...syms.map((n) => `symbol:${n}`));
-          }
-        } else {
-          for (const i of d.instructionItems()) if (i.kind === "workflow" && i.name.toLowerCase().startsWith(pfx)) items.push(i.name);
-        }
-        from.port.post({ type: "completions", kind: m.kind, items: items.slice(0, 20) });   // answers the webview that asked
+        const { kind, prefix } = m;
+        void d.instructionItems().then((instructions) => {
+          const items = kind === "@"                                   // open files, files and folders, symbols, rules and skills (Devin's @ menu)
+            ? completeMention({ prefix, files: d.files(), ix: d.index(), instructions, open: d.openPaths() })
+            : completeSlash(instructions, prefix);                     // "/" alone lists every workflow, then every skill
+          from.port.post({ type: "completions", kind, prefix, items });   // answers the webview that asked
+        });
         break;
       }
     }

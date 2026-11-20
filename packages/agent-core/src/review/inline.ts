@@ -9,6 +9,16 @@ export function selectedLines(sel: { start: { line: number; character: number };
   return { start: sel.start.line, end };
 }
 
+/** A reply with no code fence that reads like a sentence ("Sure! Here is…", "The function does:") instead of like code.
+ *  The inline prompt asks for one fenced block; when a model answers in words, those words must not become the replacement. */
+export function looksLikeProse(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.includes("```")) return false;
+  const first = t.split("\n")[0]!.trim();
+  if (/^(sure|certainly|of course|okay|ok|here|i['’]?ll|i['’]?m|i would|i can|i have|i['’]?ve|let me|below|note|unfortunately|sorry|you can|you could|to do|to make|the (code|function|method|class|selected|following|updated)|this (code|function|will|is|should))\b/i.test(first)) return true;
+  return first.endsWith(":") && first.split(/\s+/).length >= 4 && !/[(){}\[\]=;]/.test(first);
+}
+
 /** Body of the first ``` fence. `complete` once the closing fence arrived. With no fence, the whole text counts once the turn is done. */
 export function extractFence(s: string, done: boolean): { code: string; complete: boolean } | null {
   const open = /```[\w+-]*[ \t]*\r?\n/.exec(s);

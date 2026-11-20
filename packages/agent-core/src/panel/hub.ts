@@ -1,7 +1,7 @@
 import type { PanelEvent } from "./events.js";
 import { applyPanelBatch, emptyPanel, panelEvents, proposalRowId, type PanelState } from "./reducer.js";
 import { coalesce } from "./coalesce.js";
-import { emptyChrome, restoreEvents, compactEvents, sessionTitle, type ChromeState, type ForgeRef, type HostMessage, type PersistedSession, type SessionSummary } from "./protocol.js";
+import { emptyChrome, restoreEvents, compactEvents, sessionTitle, sessionStats, summaryOf, patchSession, type ChromeState, type ForgeRef, type HostMessage, type PersistedSession, type SessionPatch, type SessionSummary } from "./protocol.js";
 
 /** One webview. The extension wraps `webview.postMessage`; tests pass a recorder. */
 export interface HubPort { post(m: HostMessage): void }
@@ -40,6 +40,7 @@ export class Hub {
   private createdAt: number;
   private title = "New session";
   private forge_: ForgeRef | undefined;
+  private meta = { pinned: false, archived: false, renamed: false };            // what the person did to this session in the list
   private lastTouched = 0;
   private dirty = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,7 +75,7 @@ export class Hub {
 
   push(e: PanelEvent): void {
     this.state = applyPanelBatch(this.state, [e]);
-    if (e.kind === "user" && this.title === "New session") this.title = sessionTitle(e.text);
+    if (e.kind === "user" && this.title === "New session" && !this.meta.renamed) this.title = sessionTitle(e.text);   // a name the person chose is never replaced
     if (e.kind === "status") this.setChrome({ busy: e.state === "running" || e.state === "paused" || e.state === "stopping" });
     for (const [port, p] of this.ports) {
       p.q.push(e);
@@ -113,11 +114,37 @@ export class Hub {
   get forge(): ForgeRef | undefined { return this.forge_; }
   set forge(f: ForgeRef | undefined) { this.forge_ = f; this.touch(); }
 
-  /** Summaries for the sidebar: stored sessions plus the active one once it has content, newest first. */
+  /** The active session as a stored one (without the transcript), for its list entry and for writing it. */
+  private current(): PersistedSession {
+    const events = panelEvents(this.state);
+    return { v: 1, id: this.id, title: this.title, createdAt: this.createdAt, updatedAt: this.lastTouched, forge: this.forge_, ...this.meta, ...sessionStats(events), events: [] };
+  }
+
+  /** Summaries for the sidebar: stored sessions plus the active one once it has content. The sidebar sorts, filters and groups them. */
   summaries(): SessionSummary[] {
     const stored = this.d.store.list().filter((s) => s.id !== this.id);
-    const own: SessionSummary[] = this.state.order.length ? [{ id: this.id, title: this.title, updatedAt: this.lastTouched, running: this.chrome_.busy }] : [];
-    return [...own, ...stored].sort((a, b) => b.updatedAt - a.updatedAt);
+    const own: SessionSummary[] = this.state.order.length ? [summaryOf(this.current(), this.chrome_.busy)] : [];
+    return [...own, ...stored];
+  }
+
+  /**
+   * Rename, pin or archive a session, active or stored. Changing how it is listed is not activity: `updatedAt` stays.
+   * An empty title gives the automatic one back. False when there is no such session.
+   */
+  async update(id: string, patch: SessionPatch): Promise<boolean> {
+    if (id === this.id) {
+      const next = patchSession({ title: this.title, preview: sessionStats(panelEvents(this.state)).preview, ...this.meta }, patch);
+      this.title = next.title; this.meta = { pinned: !!next.pinned, archived: !!next.archived, renamed: !!next.renamed };
+      this.dirty = true;
+      this.persistTimer ??= setTimeout(() => this.persistNow(), this.d.persistMs ?? 1500);
+      this.broadcastSessions();
+      return true;
+    }
+    const s = await this.d.store.load(id);
+    if (!s) return false;
+    this.d.store.put(patchSession(s, patch));
+    this.broadcastSessions();
+    return true;
   }
   private sessionsMessage(): HostMessage { return { type: "sessions", items: this.summaries(), activeId: this.id }; }
   broadcastSessions(): void { this.broadcast(this.sessionsMessage()); }
@@ -128,7 +155,7 @@ export class Hub {
     this.persistTimer = null;
     if (!this.dirty || !this.state.order.length) return;
     this.dirty = false;
-    this.d.store.put({ v: 1, id: this.id, title: this.title, createdAt: this.createdAt, updatedAt: this.lastTouched, forge: this.forge_, events: compactEvents(panelEvents(this.state)) });
+    this.d.store.put({ ...this.current(), events: compactEvents(panelEvents(this.state)) });
   }
   private touch(): void {
     this.dirty = true;
@@ -149,7 +176,7 @@ export class Hub {
     const s = await this.d.store.load(id);
     if (!s) return false;
     this.persistNow();
-    this.reset(s.id, s.title, s.createdAt, s.forge, applyPanelBatch(emptyPanel(), restoreEvents(s.events)));
+    this.reset(s.id, s.title, s.createdAt, s.forge, applyPanelBatch(emptyPanel(), restoreEvents(s.events)), { pinned: !!s.pinned, archived: !!s.archived, renamed: !!s.renamed });
     return true;
   }
 
@@ -162,9 +189,9 @@ export class Hub {
     return true;
   }
 
-  private reset(id: string, title: string, createdAt: number, forge: ForgeRef | undefined, state: PanelState): void {
+  private reset(id: string, title: string, createdAt: number, forge: ForgeRef | undefined, state: PanelState, meta = { pinned: false, archived: false, renamed: false }): void {
     for (const p of this.ports.values()) { if (p.timer) clearTimeout(p.timer); p.timer = null; p.q = []; }
-    this.id = id; this.title = title; this.createdAt = createdAt; this.forge_ = forge; this.state = state; this.dirty = false;
+    this.id = id; this.title = title; this.createdAt = createdAt; this.forge_ = forge; this.state = state; this.meta = meta; this.dirty = false;
     this.lastTouched = this.d.now();
     this.broadcast({ type: "snapshot", events: panelEvents(this.state) });
     this.broadcastSessions();

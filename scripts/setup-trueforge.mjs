@@ -33,6 +33,22 @@ if (!process.argv.includes("--check")) {
   }
 }
 
+// Web search: TrueForge 0.185 supports one provider type, "parallel". The key comes from PARALLEL_API_KEY (never written to disk).
+// Shapes: WebSearchProviderManifest, UpdateWebSearchProviderRequest, ConfigurationManifestPatch (.d.ts, 20 Nov 2026).
+if (!process.argv.includes("--check")) {
+  const key = process.env.PARALLEL_API_KEY;
+  if (!key) console.error("skip web search: missing env PARALLEL_API_KEY (see .env.example)");
+  else {
+    try {
+      await client.settings.webSearchProviders.createOrUpdate({ manifest: { type: "parallel", auth: { apiKey: key } } });
+      await client.settings.configuration.update({ manifest: { webSearch: { enabled: true } } });
+      console.log("ok   web search: parallel");
+    } catch (e) {
+      console.error(`FAIL web search: ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
+    }
+  }
+}
 const models = await client.models.list();
 // VERIFY the response shape on first run and simplify this line (rule 20: record it in docs/progress/01-spike.md).
 console.log(`\nTrueForge at ${BASE} serves:\n${JSON.stringify(models, null, 2)}`);

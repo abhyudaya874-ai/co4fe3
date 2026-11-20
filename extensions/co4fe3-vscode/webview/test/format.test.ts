@@ -21,6 +21,12 @@ describe("toolLabel", () => {
     expect(bareToolName("co4fe3-ws-ab12cd34/read_file")).toBe("read_file");
     expect(bareToolName("read_file")).toBe("read_file");
   });
+  it("a skill the agent loads, or one that matched the request, reads as 'Used skill'", () => {
+    expect(toolLabel("load_instructions", '{"kind":"skill","name":"flask-cli"}')).toMatchObject({ verb: "Used skill", target: "flask-cli", icon: "bolt" });
+    expect(toolLabel("use_skill", '{"name":"flask-cli"}')).toMatchObject({ verb: "Used skill", target: "flask-cli", icon: "bolt" });
+    expect(toolLabel("load_instructions", '{"kind":"rule","name":"style"}')).toMatchObject({ verb: "Read rule", target: "style", icon: "book" });
+    expect(toolLabel("load_instructions", '{"kind":"file","name":"AGENTS.md"}')).toMatchObject({ verb: "Read instructions", target: "AGENTS.md" });
+  });
   it("only the command tool has a card of its own that replaces its row", () => {
     expect(hasOwnCard("run_command")).toBe(true);
     expect(hasOwnCard("propose_edit")).toBe(false);

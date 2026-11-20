@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, buildSpec, renderProblem, proposalEvent, settleProposalEvent, modelRows, sessionUrl, selectedLines, type Proposal, type AgentSpec } from "@co4fe3/agent-core";
+import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, buildSpec, withProjectRules, renderProblem, proposalEvent, settleProposalEvent, modelRows, sessionUrl, selectedLines, type Proposal, type AgentSpec } from "@co4fe3/agent-core";
 import { readConfig } from "./config.js";
 import { StatusItems } from "./status.js";
 import { createEditorHost, currentText } from "./host/editorHost.js";
@@ -11,15 +11,17 @@ import { ModelCatalog } from "./forge/catalog.js";
 import { createApplier, applyDecision, saveCheckpoints } from "./review/apply.js";
 import { createReviewController } from "./review/controller.js";
 import { registerInlineEdit } from "./inline/inlineEdit.js";
+import { SelectionWidget } from "./inline/selectionWidget.js";
 import { DockView, AgentWindow } from "./panel/panelView.js";
 import { AgentTurns } from "./panel/agentTurn.js";
 import { Crew } from "./panel/crew.js";
 import { FileSessionStore } from "./panel/sessionStore.js";
+import { registerPlanDocs } from "./panel/planDocs.js";
 import { createUiCommands, pickModelQuick } from "./panel/uiCommands.js";
 import { LayoutController } from "./layout/layoutController.js";
 import { makeOnPause } from "./panel/pause.js";
 import { loadInstructions, commandPolicy, deny, allow, safeJson, RunCommand, indexFile, rankFiles, type PendingCall, type TrueForgeApi } from "@co4fe3/agent-core";
-import { Hub, UI_MODES, runtimeOf, uiModeOf, nextUiMode, type HubPort, type HostMessage, type UiMode } from "@co4fe3/agent-core/panel";
+import { Hub, normalizeSidebar, type SidebarPrefs, UI_MODES, runtimeOf, uiModeOf, nextUiMode, type HubPort, type HostMessage, type UiMode } from "@co4fe3/agent-core/panel";
 import { IndexStore, ContextPacks, indexWorkspaceInBackground } from "./context/indexer.js";
 import inlineAgent from "../../../agents/co4fe3-inline.agent.json";
 import coderAgent from "../../../agents/co4fe3-coder.agent.json";
@@ -124,7 +126,15 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       if (shownInEditor.has(a.key)) settleEditorDiff(a.key, a.path, true);                       // the diff closes and the real file opens at the change
       else if (wantsEditorDiff()) void review.reveal(a.path, firstChangedLine.get(a.key) ?? last?.hunks[0]?.oldStart ?? 0);
     },
-  }), (l) => out.info(l));                                                                       // 02 binds 127.0.0.1:0 only
+    onPlan: (p) => {                                                                             // the plan card; Accept starts the Code-mode turn (uiCommands "plan")
+      const t = turnRef.current;
+      if (t.id === turnRef.idle.id) return "No request is running.";
+      if (runtimeOf(uiMode).mode !== "plan") return "write_plan is for Plan mode only. Make the change with propose_edit.";
+      hub.push({ kind: "plan", id: t.id, turnId: t.id, title: p.title, summary: p.summary, body: p.body, state: "proposed" });
+      return undefined;
+    },
+  }), (l) => out.info(l));
+  ctx.subscriptions.push(registerPlanDocs(hub));                                                                       // 02 binds 127.0.0.1:0 only
   ctx.subscriptions.push({ dispose: () => void mcp.close() });
   const serverName = mcpServerNameFor(host.root);                                                // 02 "co4fe3-ws-<8 hex>"
   const tfStatus = {                                                                             // the status bar and the chat show the same TrueForge state
@@ -174,12 +184,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     if (last) settleEditorDiff(key, last.path, false);
   }) });
 
-  /** `project` = the rendered project rules and AGENTS.md. The lead's own instructions (the crew protocol) always stay in front of them. */
+  /** `project` = the rendered project rules and AGENTS.md. They come FIRST in the instructions; the lead's own protocol (the crew rules) follows. */
   const specFor = (mode: "inline" | "agent" | "ask" | "plan", model: string, project?: string): AgentSpec => {
     const file = (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec;
     const base = String(file.instructions ?? "");
     return buildSpec(file, { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled,
-      ...(mode !== "inline" && project ? { instructions: `${base}\n\n${project}` } : {}) });       // the mode decides the tools; inline has none via its own file
+      ...(mode !== "inline" && project ? { instructions: withProjectRules(base, project) } : {}) });       // the mode decides the tools; inline has none via its own file
   };
   const sessions = new SessionPool(getClient, specFor);                                             // 04 pre-warmed sessions
   const catalog = new ModelCatalog(ctx, getClient, cfg, (l) => out.info(l), () => refreshModel());   // what TrueForge serves, the user's pick, recents
@@ -243,24 +253,43 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     recent: () => changedPaths,
     approveCommand, out,
     answered: (m) => catalog.noteAnswered(m),
+    contextWindow: (m) => catalog.served.find((s) => s.name === m)?.contextLength ?? null,
   }, makeOnPause);
 
   // Where the chat lives: docked beside the editor, or filling the window. Both show the same Hub.
   const legacyDock = !supportsSecondarySidebar(vscode.version);
   void vscode.commands.executeCommand("setContext", "co4fe3.legacyDock", legacyDock);
+  // The sessions sidebar's look (width, sort, group, filter) is remembered per person, in globalState: never a settings file.
+  const setSidebar = (patch: Partial<SidebarPrefs>): void => {
+    const next = normalizeSidebar(patch, hub.chrome.sidebar);
+    void ctx.globalState.update("co4fe3.sidebar", next);
+    hub.setChrome({ sidebar: next });
+  };
+  hub.setChrome({ sidebar: normalizeSidebar(ctx.globalState.get("co4fe3.sidebar")) });
   const afterSessionChange = (): void => {
     board.clear();
     hub.setChrome({ sessionUrl: hub.forge ? sessionUrl(cfg().trueforge.url, hub.forge.sessionId) : null });
   };
   afterSessionChange();
   const attach = (port: HubPort): vscode.Disposable => new vscode.Disposable(hub.attach(port));
+  let workspaceFiles: readonly string[] = [];                                                    // the "@" menu lists every file, not only the indexed ones
+  const refreshFiles = (): void => { void host.listFiles(5000).then((f) => { workspaceFiles = f; }, () => undefined); };
+  refreshFiles();
+  void instructions();                                                                           // "/" and "@rule:" work before the first message
+  ctx.subscriptions.push(vscode.workspace.onDidCreateFiles(refreshFiles), vscode.workspace.onDidDeleteFiles(refreshFiles), vscode.workspace.onDidRenameFiles(refreshFiles));
   const onCommand = createUiCommands({
     host, hub, turns, review, applier, router, sessions, catalog,
     index: () => index.get(),
-    instructionItems: () => lastInstructions?.items ?? [],
+    instructionItems: async () => { try { return (await instructions()).items; } catch { return lastInstructions?.items ?? []; } },   // waits for a reload, so "/" lists files created after start-up
+    files: () => workspaceFiles,
+    openPaths: () => {
+      const rel = (u: vscode.Uri): string | null => (u.scheme === "file" ? vscode.workspace.asRelativePath(u, false).split(path.sep).join("/") : null);
+      const active = vscode.window.activeTextEditor?.document.uri;
+      return [active ? rel(active) : null, ...vscode.window.visibleTextEditors.map((e) => rel(e.document.uri)), ...changedPaths].filter((p): p is string => !!p && !p.startsWith("..") && !path.isAbsolute(p));
+    },
     pendingCommands, setUiMode,
     enterLayout: (l) => layout.enter(l),
-    afterSessionChange, modelsMessage, log: (l) => out.info(l),
+    afterSessionChange, setSidebar, modelsMessage, log: (l) => out.info(l),
   });
   const dock = new DockView(ctx, attach, onCommand, (l) => out.info(l));
   const agentWindow = new AgentWindow(ctx, attach, onCommand, (l) => out.info(l));
@@ -282,21 +311,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.registerWebviewViewProvider(DockView.id, dock, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerWebviewViewProvider(DockView.legacyId, dock, { webviewOptions: { retainContextWhenHidden: true } }),
   );
-
-  // The editor's selection, offered in the composer as a chip (file#L13-15).
-  let selTimer: NodeJS.Timeout | undefined;
-  const syncSelection = (): void => {
-    clearTimeout(selTimer);
-    selTimer = setTimeout(() => {
-      const ed = vscode.window.activeTextEditor;
-      if (!ed || ed.document.uri.scheme !== "file" || ed.selection.isEmpty) return void hub.setChrome({ selection: null });
-      const rel = vscode.workspace.asRelativePath(ed.document.uri, false);
-      if (rel.startsWith("..") || path.isAbsolute(rel)) return void hub.setChrome({ selection: null });
-      const lines = selectedLines(ed.selection);                                              // a selection that ends at column 0 does not include that line
-      hub.setChrome({ selection: { path: rel.split(path.sep).join("/"), start: lines.start + 1, end: lines.end + 1 } });
-    }, 120);
-  };
-  ctx.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(syncSelection), vscode.window.onDidChangeActiveTextEditor(syncSelection), { dispose: () => clearTimeout(selTimer) });
 
   ctx.subscriptions.push(
     vscode.commands.registerCommand("co4fe3.pickModel", () => pickModelQuick({ catalog, router })),
@@ -326,6 +340,33 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     void ctx.globalState.update("co4fe3.dockShown", true);
     setTimeout(() => void dockFocus(), 1500);
   }
+  const selectionWidget = new SelectionWidget(() => vscode.workspace.getConfiguration("co4fe3").get<boolean>("editor.selectionWidget", true));
+  ctx.subscriptions.push(selectionWidget, vscode.languages.registerHoverProvider({ scheme: "file" }, selectionWidget));
+  /** The selection in the active editor as a chat attachment (1-based lines), or null. Only an explicit Chat or Explain sends it anywhere. */
+  const selectionToAttach = (): { path: string; start: number; end: number } | null => {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== "file") return null;
+    const rel = vscode.workspace.asRelativePath(ed.document.uri, false);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return null;                            // a file outside the workspace is not ours to read
+    const lines = selectedLines(ed.selection);                                                 // a selection that ends at column 0 does not include that line
+    return { path: rel.split(path.sep).join("/"), start: lines.start + 1, end: lines.end + 1 };
+  };
+  const showChat = async (): Promise<void> => { if (layout.layout === "agent") agentWindow.open(); else await dockFocus(); };
+  ctx.subscriptions.push(
+    vscode.commands.registerCommand("co4fe3.chatSelection", async () => {                      // Ctrl+L: put the selection in the prompt box, ready for a question
+      const a = selectionToAttach();
+      if (a) hub.setChrome({ attached: a });
+      await showChat();
+      hub.broadcast({ type: "focusComposer" });
+    }),
+    vscode.commands.registerCommand("co4fe3.explainSelection", async () => {                   // one click: ask what the selection does, read-only, without touching the chat's mode
+      const a = selectionToAttach();
+      if (!a) return void vscode.window.showInformationMessage("Select some code first.");
+      if (turns.busy) return void vscode.window.showInformationMessage("Wait for the current request, or stop it first.");
+      await showChat();
+      void turns.send("Explain this code: what it does, how it works, and where it is used in the project.", a, undefined, "ask");
+    }),
+  );
   registerInlineEdit(ctx, {                                                                      // 04 Task A
     host, review, sessions, router, out,
     status: { inline: (p) => status.inline(p), setTtft: (ms, m) => status.setTtft(ms, m) },

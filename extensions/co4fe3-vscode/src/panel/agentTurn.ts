@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet, EditorHost, Board } from "@co4fe3/agent-core";
 import type { Hub, UiMode } from "@co4fe3/agent-core/panel";
-import { runtimeOf } from "@co4fe3/agent-core/panel";
-import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, findToolCall, parseCommandResult, safeJson, sha256Hex, jail, TurnPolicy, toolNameOf, Marks, type TurnOutcome } from "@co4fe3/agent-core";
+import { runtimeOf, sessionTitle } from "@co4fe3/agent-core/panel";
+import { sessionUrl, renderPack, wantsPack, EMPTY_PACK, renderInstructions, renderActiveSkills, selectInline, activeSkills, skillsUsed, expandWorkflow, instructionMentions, fromForge, usageFromForge, findToolCall, parseCommandResult, safeJson, sha256Hex, jail, TurnPolicy, toolNameOf, Marks, type TurnOutcome } from "@co4fe3/agent-core";
 import type { Crew } from "./crew.js";
 import type { PauseMaker } from "./pause.js";
 import type { Router } from "../forge/router.js";
@@ -33,6 +33,8 @@ export interface AgentTurnDeps {
   status: { setTtft(ms: number, model: string): void };
   /** A model answered: the menu's "Recently used". */
   answered(model: string): void;
+  /** The model's context window in tokens (TrueForge's models.list contextLength), or null when unknown. */
+  contextWindow(model: string): number | null;
 }
 
 const MAX_ATTACH_LINES = 200;
@@ -46,38 +48,48 @@ export class AgentTurns {
 
   get busy(): boolean { return this.running !== null; }
 
-  async send(text: string, attach?: { path: string; start: number; end: number }): Promise<void> {
+  /** `shown`: what the user bubble says when it differs from what the model gets (an accepted plan sends the whole plan). */
+  async send(text: string, attach?: { path: string; start: number; end: number }, shown?: string, only?: "agent" | "ask" | "plan"): Promise<void> {   // only: this turn's mode, whatever the chat's mode is (Explain is always read-only)
     if (this.running) return;                                     // Send is Stop while running (rule 20, trap 3)
     const ac = new AbortController(); this.running = ac;
     const turnKey = `t${Date.now().toString(36)}`;
     this.d.turn.current = { id: turnKey, signal: ac.signal, policy: new TurnPolicy(turnKey) };
     const hub = this.d.hub;
     const marks = new Marks(); marks.mark("enter");
-    hub.push({ kind: "user", turnId: turnKey, text, ...(attach ? { attach } : {}) });
+    hub.push({ kind: "user", turnId: turnKey, text: shown ?? text, ...(attach ? { attach } : {}) });
     hub.push({ kind: "status", state: "running" });               // the UI answers at once; the session and the pack take a moment
     try {
-      const { mode, autoApproveCommands } = runtimeOf(this.d.uiMode());   // Code | Ask | Plan | Bypass (rule 50 §1)
+      const rt = runtimeOf(this.d.uiMode());                             // Code | Ask | Plan | Bypass (rule 50 §1)
+      const mode = only ?? rt.mode, autoApproveCommands = only ? false : rt.autoApproveCommands;
       this.d.crew.reset(mode);                                          // members and the watchdog belong to one request
       const active = attach?.path ?? this.activePath();
-      const pack = await this.d.packFor(text, active, this.recentPaths());   // rule 40: ≤ 800 ms full, else quick, else none
-      hub.push({ kind: "pack", pack, turnId: turnKey });
+      const pack = wantsPack(text, !!attach) ? await this.d.packFor(text, active, this.recentPaths()) : EMPTY_PACK;   // rule 40: ≤ 800 ms full, else quick, else none; "hi" gets none
+      if (pack !== EMPTY_PACK) hub.push({ kind: "pack", pack, turnId: turnKey });
       const set = await this.d.instructions();
       const files = pack.items.map((i) => i.path);
       const sel = selectInline(set, files);
       const skills = set.items.filter((i) => i.kind === "skill");
       const activeSk = activeSkills(set, text, files);
-      hub.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length, activeSkills: activeSk.map((s) => s.name), turnId: turnKey });
-      // The lead's own instructions (the crew protocol, tool use) stay; the project's rules are appended behind them.
+      const request = instructionMentions(set, expandWorkflow(set, text).text);   // "/workflow" or "/skill", then "@rule:x" / "@skill:x" bodies
+      hub.push({ kind: "instructions", inline: [...sel.inline.map((i) => i.name), ...request.loaded.map((i) => `@${i.kind}:${i.name}`)], onDemand: sel.onDemand.length, activeSkills: activeSk.map((s) => s.name),
+        inlinePaths: [...sel.inline.map((i) => i.path), ...request.loaded.map((i) => i.path)], skillPaths: activeSk.map((s) => s.path), turnId: turnKey });
+      // Each skill that reaches this turn gets its own tool-style row ("Used skill flask-cli"), as in Devin and Antigravity.
+      for (const u of skillsUsed(set, text, activeSk, request.loaded)) {
+        hub.push({ kind: "tool", id: `skill:${turnKey}:${u.name}`, threadId: "main", name: "use_skill", args: JSON.stringify({ name: u.name }), state: "ok", result: u.result });
+      }
+      // The project's rules go FIRST in the agent's instructions (specFor → withProjectRules); the lead's crew protocol follows them.
       const project = renderInstructions("", sel, skills).trim();
       const model = this.d.router.order("agent")[0] ?? "";
-      const forge = await this.d.sessions.chat(hub.forge, { project, instr: sha256Hex(project).slice(0, 12), mode, model });
+      const forge = await this.d.sessions.chat(hub.forge, { project, instr: sha256Hex(project).slice(0, 12), mode, model, title: sessionTitle(shown ?? text) });
       hub.forge = forge;                                                // the next message continues this TrueForge session
       const url = sessionUrl(this.d.cfg().trueforge.url, forge.sessionId);
       hub.setChrome({ sessionUrl: url });
       marks.mark("session");
       const chat = { id: forge.sessionId, model: forge.model };
+      const memberThreads = new Set<string>();                          // crew members have their own context; the meter shows the lead's
       const selection = attach ? await this.selectionBlock(attach) : "";
-      const message = `${renderActiveSkills(activeSk)}${renderPack(pack)}\n\n${selection}${expandWorkflow(set, text).text}`;   // volatile parts after the stable prefix
+      // The request first: TrueForge shows (and titles) the session by it. The selection, skills and the repo map follow as context.
+      const message = [request.text, selection.trim(), renderActiveSkills(activeSk).trim(), renderPack(pack)].filter(Boolean).join("\n\n");
       const out: TurnOutcome = await this.d.router.agent(chat, message, {
         specFor: (m) => this.d.specFor(mode, m, project),               // a fallback switches the model only: same mode, same project rules
         onEvent: (e, index) => {
@@ -87,6 +99,9 @@ export class AgentTurns {
             if (pe.kind === "tool") marks.mark("firstTool");
             hub.push(pe);
           }
+          if (e.type === "thread.created") memberThreads.add(e.threadId);
+          const used = usageFromForge(e, { turnId: turnKey, model: chat.model, window: this.d.contextWindow(chat.model), skipThreads: memberThreads });   // the lead's last call = what its context holds now
+          if (used) hub.push(used);
           const stop = this.d.crew.onEvent(e);
           if (e.type === "tool.response") {                                 // the call lives in the merged index (streamed calls arrive as deltas)
             const call = findToolCall(index, e.toolCallId);

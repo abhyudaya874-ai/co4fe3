@@ -211,14 +211,31 @@ export const LatencyLine = memo(function LatencyLine({ e }: { e: Of<"latency"> }
   return <div className="latency muted" title="Measured on this request">{e.line}</div>;
 });
 
+/** Names that open their file in the editor. A name with no known path stays plain text. */
+function FileLinks({ names, paths }: { names: readonly string[]; paths?: readonly string[] }) {
+  const { openFile } = useActions();
+  return (
+    <>
+      {names.map((n, i) => {
+        const p = paths?.[i];
+        return (
+          <span key={`${n}:${i}`}>
+            {i > 0 && ", "}
+            {p ? <button type="button" className="link-btn inline-link" title={`Open ${p}`} onClick={() => openFile(p)}>{n}</button> : n}
+          </span>
+        );
+      })}
+    </>
+  );
+}
 export const InstructionsLine = memo(function InstructionsLine({ e }: { e: Of<"instructions"> }) {
   const total = e.inline.length + e.activeSkills.length;
   if (!total && !e.onDemand) return null;
   return (
     <details className="ctx instr">
       <summary><Icon name="book" size={12} /><span>Project instructions · {e.inline.length} loaded{e.activeSkills.length ? ` · ${e.activeSkills.length} skill${e.activeSkills.length === 1 ? "" : "s"}` : ""}{e.onDemand ? ` · ${e.onDemand} on demand` : ""}</span></summary>
-      {e.inline.length > 0 && <div className="muted">Loaded: {e.inline.join(", ")}</div>}
-      {e.activeSkills.length > 0 && <div className="muted">Skills: {e.activeSkills.join(", ")}</div>}
+      {e.inline.length > 0 && <div className="muted">Loaded: <FileLinks names={e.inline} paths={e.inlinePaths} /></div>}
+      {e.activeSkills.length > 0 && <div className="muted">Skills: <FileLinks names={e.activeSkills} paths={e.skillPaths} /></div>}
     </details>
   );
 });

@@ -32,6 +32,15 @@ export class Router {
     return s && s.benchedUntil > Date.now() ? s : undefined;
   }
   stat(fqn: string): ModelStat | undefined { return this.stats()[fqn]; }
+  /** The configured model that is left out of this order because an earlier failure benched it, with that failure. Null if none. The next answer says so instead of looking like nothing happened. */
+  skippedAhead(mode: Mode): { model: string; failure: Failure } | null {
+    const kept = this.order(mode), now = Date.now();
+    for (const m of this.deps.order()) {
+      const s = this.stats()[m];
+      if (!kept.includes(m) && s && s.benchedUntil > now) return { model: m, failure: classifyFailure(s.lastError ?? "") };
+    }
+    return null;
+  }
   /** Every model's stats, for the chat's model menu. */
   statsMap(): Readonly<Record<string, ModelStat>> { return this.stats(); }
   resetStats(): void { void this.ctx.globalState.update("co4fe3.stats.v1", {}); }

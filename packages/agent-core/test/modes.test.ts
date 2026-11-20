@@ -4,7 +4,7 @@ import { TOOLS, APPROVAL, READ_ONLY, toolsForMode, toolsForProfile, memberMayCal
 describe("modes (rule 50 §1)", () => {
   it("every tool is in TOOLS exactly once", () => {
     expect(new Set(TOOLS).size).toBe(TOOLS.length);
-    expect(TOOLS.length).toBe(11);
+    expect(TOOLS.length).toBe(12);
   });
 
   it("READ_ONLY contains no key of APPROVAL", () => {
@@ -14,8 +14,15 @@ describe("modes (rule 50 §1)", () => {
 
   it("toolsForMode('ask') has no gated tool", () => {
     for (const t of toolsForMode("ask")) expect(t in APPROVAL).toBe(false);
-    expect(toolsForMode("plan")).toEqual(toolsForMode("ask"));
+    for (const t of toolsForMode("plan")) expect(t in APPROVAL).toBe(false);
+    expect(toolsForMode("plan")).toEqual([...READ_ONLY, "write_plan"]);   // Plan = Ask + write_plan
+    expect(toolsForMode("ask")).not.toContain("write_plan");
     expect(toolsForMode("agent")).toEqual(TOOLS);
+  });
+
+  it("only the Plan-mode lead may write a plan: research members never get write_plan", () => {
+    expect(memberMayCall("research", "plan", "write_plan")).toBe(false);
+    expect(memberMayCall("research", "plan", "read_file")).toBe(true);
   });
 
   it("research members lose the gated tools; work members keep the mode's set", () => {

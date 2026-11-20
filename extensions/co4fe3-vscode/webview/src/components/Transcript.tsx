@@ -3,9 +3,10 @@ import type { PanelState, Row } from "@co4fe3/agent-core/panel";
 import { ErrorBoundary } from "./ErrorBoundary.js";
 import { Icon, Spinner } from "./Icon.js";
 import { DiffCard } from "./DiffCard.js";
+import { PlanCard } from "./PlanCard.js";
 import { UserBubble, AssistantText, ToolRow, MemberRow, MessageBubble, PackCard, BoardCard, CommandCard, ModelBanner, Marker, LatencyLine, InstructionsLine } from "./rows.js";
 
-function renderRow(row: Row, live: boolean) {
+function renderRow(row: Row, live: boolean, busy: boolean) {
   const e = row.e;
   switch (e.kind) {
     case "user": return <UserBubble e={e} />;
@@ -18,10 +19,11 @@ function renderRow(row: Row, live: boolean) {
     case "command": return <CommandCard e={e} />;
     case "marker": return <Marker e={e} />;
     case "board": return <BoardCard entries={e.entries} />;
+    case "plan": return <PlanCard e={e} busy={busy} />;
     case "model": return <ModelBanner e={e} />;
     case "latency": return <LatencyLine e={e} />;
     case "instructions": return <InstructionsLine e={e} />;
-    case "status": return null;                                          // the status lives outside the row order
+    case "status": case "usage": return null;                                          // the status lives outside the row order
   }
 }
 
@@ -44,7 +46,7 @@ export const Transcript = memo(function Transcript({ s, busy }: { s: PanelState;
     <div className="transcript">
       {s.order.map((row) => (
         <ErrorBoundary key={row.id} scope="row" label={row.k}>
-          {renderRow(row, busy && row.id === last)}
+          {renderRow(row, busy && row.id === last, busy)}
         </ErrorBoundary>
       ))}
       <BoardCard entries={s.board} />

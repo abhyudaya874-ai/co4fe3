@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractFence, streamingPreview, assembleInline, buildInlinePrompt, canAdvance, PhaseBox, type InlinePhase, selectedLines } from "../src/review/inline.js";
+import { looksLikeProse, extractFence, streamingPreview, assembleInline, buildInlinePrompt, canAdvance, PhaseBox, type InlinePhase, selectedLines } from "../src/review/inline.js";
 import type { Problem } from "../src/host.js";
 
 describe("extractFence", () => {
@@ -93,5 +93,19 @@ describe("selectedLines", () => {
   });
   it("two lines ending at column 0 of the third are two lines", () => {
     expect(selectedLines({ start: pos(1, 0), end: pos(3, 0) })).toEqual({ start: 1, end: 2 });
+  });
+});
+
+describe("looksLikeProse (a reply with no code fence)", () => {
+  it("words are not code", () => {
+    for (const t of ["Sure! Here's the updated function:", "Here is the change you asked for", "I'll add the comment now.", "The function now returns early:", "Unfortunately I cannot see the file.", "Let me know what you think", "To do this, add a check before the return:"]) expect(looksLikeProse(t), t).toBe(true);
+  });
+  it("code is code, fenced or not", () => {
+    for (const t of ["def f():\n    return 1", "    value = os.environ.get(key)\n    return value", "the_value = 3", "x = {1: 2}", "# a comment\nprint(1)", "```python\nx = 1\n```", "Here:\n```py\nx\n```", "return bool(val and val.lower() not in {'0'})", ""]) expect(looksLikeProse(t), t).toBe(false);
+  });
+  it("a heading line that ends with a colon is prose only when it reads like a sentence", () => {
+    expect(looksLikeProse("Updated code for the function below:")).toBe(true);
+    expect(looksLikeProse("class Foo(Base):\n    pass")).toBe(false);
+    expect(looksLikeProse("if x:\n    y()")).toBe(false);
   });
 });

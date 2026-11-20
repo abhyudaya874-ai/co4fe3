@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fromForge } from "../src/forge/fromForge.js";
+import { fromForge, usageFromForge } from "../src/forge/fromForge.js";
 import { mergeEventDelta } from "@truefoundry/trueforge-sdk";
 import type { TfEvent, EventIndex } from "../src/forge/turn.js";
 
@@ -82,5 +82,42 @@ describe("fromForge (workflow 05 §1)", () => {
     const ix = index();
     expect(fromForge({ type: "thread.context_compaction_started", id: "e", threadId: "main" } as unknown as TfEvent, ix, { mode: "agent" })[0]?.kind).toBe("marker");
     expect(fromForge({ type: "mcp.initialize", id: "e" } as unknown as TfEvent, ix, { mode: "agent" })).toEqual([]);
+  });
+});
+
+describe("usageFromForge: the context meter's numbers", () => {
+  // Recorded from a real run on nvidia-nim/nemotron-super (19 Nov 2026): the model.message has NO usage; the last model.message.delta has it.
+  const usage = { inputTokens: 408, outputTokens: 64, cacheReadTokens: 0, inputTokensBreakdown: { harness: 213, skills: 0, instructions: 5, toolDefinitions: 0, messages: 190 } };
+  const ctx = { turnId: "t1", model: "nvidia-nim/nemotron-super", window: 262_144 };
+  const whole = { type: "model.message", id: "m1", threadId: "main", content: "", finishReason: null } as unknown as TfEvent;
+  const last = { type: "model.message.delta", id: "m1", threadId: "main", finishReason: "length", usage } as unknown as TfEvent;
+  const mid = { type: "model.message.delta", id: "m1", threadId: "main", content: "Hel" } as unknown as TfEvent;
+
+  it("reads the usage from the last delta of a streamed message (regression: only model.message was checked, so the meter never appeared)", () => {
+    expect(usageFromForge(whole, ctx)).toBeNull();
+    expect(usageFromForge(mid, ctx)).toBeNull();
+    expect(usageFromForge(last, ctx)).toEqual({
+      kind: "usage", turnId: "t1", model: "nvidia-nim/nemotron-super", inputTokens: 408, outputTokens: 64, cacheReadTokens: 0, window: 262_144,
+      breakdown: { harness: 213, skills: 0, instructions: 5, toolDefinitions: 0, messages: 190 },
+    });
+  });
+  it("also reads it from a message that arrives whole", () => {
+    const e = { type: "model.message", id: "m2", threadId: "main", content: "hi", usage } as unknown as TfEvent;
+    expect(usageFromForge(e, ctx)).toMatchObject({ kind: "usage", inputTokens: 408, outputTokens: 64 });
+  });
+  it("an unknown window stays null (the ring then shows the token count only), and a missing cache figure is left out", () => {
+    const { cacheReadTokens: _gone, ...bare } = usage;
+    const e = { type: "model.message.delta", id: "m3", threadId: "main", usage: bare } as unknown as TfEvent;
+    const out = usageFromForge(e, { ...ctx, window: null });
+    expect(out).toMatchObject({ window: null }); expect(out).not.toHaveProperty("cacheReadTokens");
+  });
+  it("a crew member's calls are not the lead's context", () => {
+    const member = { ...(last as object), threadId: "th9" } as unknown as TfEvent;
+    expect(usageFromForge(member, { ...ctx, skipThreads: new Set(["th9"]) })).toBeNull();
+    expect(usageFromForge(member, ctx)).not.toBeNull();
+  });
+  it("other events carry none", () => {
+    expect(usageFromForge({ type: "turn.done", id: "e", state: { status: "done" } } as unknown as TfEvent, ctx)).toBeNull();
+    expect(usageFromForge({ type: "tool.response", id: "e", threadId: "main", toolCallId: "c", content: "x", usage } as unknown as TfEvent, ctx)).toBeNull();
   });
 });

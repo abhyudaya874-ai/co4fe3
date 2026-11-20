@@ -14,6 +14,13 @@ export const ProposeEdit = z.object(ProposeEditShape).refine((v) => (v.edits?.le
 export type ProposeEdit = z.infer<typeof ProposeEdit>;
 export const RunCommandShape = { command: z.string().min(1).max(2000), timeout_s: z.number().int().min(1).max(600).default(120) };
 export const RunCommand = z.object(RunCommandShape);
+export const WritePlanShape = {
+  title: z.string().min(3).max(120).describe("Short name of the change, e.g. 'Doc comment for startHarness (harness.ts:111)'."),
+  summary: z.string().min(3).max(400).describe("One or two sentences: what changes and why."),
+  body: z.string().min(10).max(20_000).describe("Markdown. Numbered steps; each names the file, the exact change and how to verify it."),
+};
+export const WritePlan = z.object(WritePlanShape);
+export type WritePlan = z.infer<typeof WritePlan>;
 
 /** The key both sides compute. Same input → same key, whatever the property order. */
 export const proposalKey = (rel: string, v: ProposeEdit): string =>

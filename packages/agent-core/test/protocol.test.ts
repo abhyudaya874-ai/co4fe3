@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UI_MODES, runtimeOf, uiModeOf, nextUiMode, sessionTitle, relativeAge, compactEvents, restoreEvents, selectionLabel, parseUiCommand, type UiMode } from "../src/panel/protocol.js";
+import { UI_MODES, runtimeOf, uiModeOf, nextUiMode, sessionTitle, relativeAge, compactEvents, restoreEvents, selectionLabel, parseUiCommand, emptyChrome, defaultSidebar, normalizeSidebar, sidebarPatch, patchSession, summaryOf, normalizeSummary, sessionStats, cleanTitle, SIDEBAR_MAX, SIDEBAR_MIN, type UiMode } from "../src/panel/protocol.js";
 import { applyPanelBatch, emptyPanel, panelEvents } from "../src/panel/reducer.js";
 import type { PanelEvent } from "../src/panel/events.js";
 
@@ -97,11 +97,12 @@ describe("panelEvents (the snapshot)", () => {
 describe("parseUiCommand (the webview is untrusted input)", () => {
   it("accepts every command the UI sends", () => {
     const ok: unknown[] = [
-      { type: "ready" }, { type: "stop" }, { type: "focus" }, { type: "newSession" }, { type: "models" }, { type: "openSession" }, { type: "pickModel" },
+      { type: "ready" }, { type: "detach" }, { type: "stop" }, { type: "focus" }, { type: "newSession" }, { type: "models" }, { type: "openSession" }, { type: "pickModel" },
       { type: "send", text: "hello" }, { type: "send", text: "x", attach: { path: "a.py", start: 1, end: 3 } },
       { type: "decide", key: "k", hunkId: "h1", verdict: "accepted" }, { type: "decideAll", key: "k", verdict: "rejected" },
       { type: "openDiff", key: "k" }, { type: "openFile", path: "a.py", line: 4 }, { type: "openFile", path: "a.py" },
       { type: "command", id: "cmd-1", verdict: "allow" }, { type: "undo", checkpointId: "cp1" }, { type: "revertTurn", turnId: "t1" },
+      { type: "plan", id: "t1", verdict: "accept" }, { type: "plan", id: "t1", verdict: "reject" }, { type: "openPlan", id: "t1" },
       { type: "setMode", mode: "bypass" }, { type: "complete", kind: "@", prefix: "ap" }, { type: "setModel", name: "nvidia-nim/nemotron-super" }, { type: "setModel", name: null },
       { type: "switchSession", id: "abcd-1234" }, { type: "deleteSession", id: "abcd-1234" }, { type: "setLayout", layout: "agent" },
     ];
@@ -122,7 +123,89 @@ describe("parseUiCommand (the webview is untrusted input)", () => {
   });
 });
 
+it("a new chat has nothing attached: selecting text alone never reaches the prompt box", () => {
+  expect(emptyChrome().attached).toBeNull();
+  expect("selection" in emptyChrome()).toBe(false);
+});
+
 it("selectionLabel mirrors the composer chip (file#L13-15)", () => {
   expect(selectionLabel({ path: "app/layout.tsx", start: 13, end: 15 })).toBe("layout.tsx#L13-15");
   expect(selectionLabel({ path: "a.py", start: 4, end: 4 })).toBe("a.py#L4");
+});
+
+describe("sidebar preferences", () => {
+  it("start as documented and survive a round trip", () => {
+    expect(defaultSidebar()).toEqual({ width: 264, hidden: false, sort: "updated", desc: true, group: "none", filter: "all", collapsed: [] });
+    const p = { ...defaultSidebar(), width: 310, sort: "name" as const, desc: false, group: "model" as const, filter: "edited" as const, collapsed: ["pinned", "date:old"] };
+    expect(normalizeSidebar(JSON.parse(JSON.stringify(p)))).toEqual(p);
+  });
+  it("hostile or stale input keeps what is valid and drops the rest", () => {
+    expect(normalizeSidebar({ width: 99999, sort: "bogus", group: "date", filter: 7, desc: "yes", collapsed: ["a", 3, "", "x".repeat(99)] }))
+      .toEqual({ ...defaultSidebar(), width: SIDEBAR_MAX, group: "date", collapsed: ["a"] });
+    expect(normalizeSidebar({ width: -5 }).width).toBe(SIDEBAR_MIN);
+    expect(normalizeSidebar({ width: NaN }).width).toBe(264);
+    expect(normalizeSidebar(null)).toEqual(defaultSidebar()); expect(normalizeSidebar("x")).toEqual(defaultSidebar());
+    expect(sidebarPatch({ __proto__: { sort: "name" }, nope: 1 })).toEqual({});
+  });
+  it("setSidebar from the webview is sanitized by the parser", () => {
+    expect(parseUiCommand({ type: "setSidebar", prefs: { width: 300, sort: "created", evil: 1 } })).toEqual({ type: "setSidebar", prefs: { width: 300, sort: "created" } });
+    expect(parseUiCommand({ type: "setSidebar" })).toBeNull(); expect(parseUiCommand({ type: "setSidebar", prefs: 5 })).toBeNull();
+  });
+});
+
+describe("session list commands", () => {
+  it("rename, pin and archive are validated", () => {
+    expect(parseUiCommand({ type: "renameSession", id: "s1", title: "Fix redirects" })).toEqual({ type: "renameSession", id: "s1", title: "Fix redirects" });
+    expect(parseUiCommand({ type: "renameSession", id: "s1", title: "" })).toEqual({ type: "renameSession", id: "s1", title: "" });   // empty = back to the automatic name
+    expect(parseUiCommand({ type: "renameSession", id: "s1", title: "x".repeat(401) })).toBeNull();
+    expect(parseUiCommand({ type: "renameSession", id: "", title: "x" })).toBeNull(); expect(parseUiCommand({ type: "renameSession", id: "s1" })).toBeNull();
+    expect(parseUiCommand({ type: "pinSession", id: "s1", pinned: true })).toEqual({ type: "pinSession", id: "s1", pinned: true });
+    expect(parseUiCommand({ type: "pinSession", id: "s1", pinned: "yes" })).toBeNull();
+    expect(parseUiCommand({ type: "archiveSession", id: "s1", archived: false })).toEqual({ type: "archiveSession", id: "s1", archived: false });
+  });
+});
+
+describe("patchSession", () => {
+  const base = { title: "Give me a tour of this codebase", preview: "Give me a tour of this codebase and the build", renamed: false, pinned: false, archived: false };
+  it("a new name is kept, cleaned and marked as chosen", () => {
+    const r = patchSession(base, { title: "  Flask   tour \n " });
+    expect(r).toMatchObject({ title: "Flask tour", renamed: true });
+    expect(cleanTitle("x".repeat(300))).toHaveLength(100);
+  });
+  it("an empty name gives the automatic one back, from the first message", () => {
+    const named = patchSession(base, { title: "Mine" });
+    expect(patchSession(named, { title: "   " })).toMatchObject({ title: "Give me a tour of this codebase and the build", renamed: false });
+    expect(patchSession({ ...base, preview: "" }, { title: "" }).title).toBe("New session");
+  });
+  it("pinned and archived exclude each other", () => {
+    const pinned = patchSession(base, { pinned: true });
+    expect(pinned).toMatchObject({ pinned: true, archived: false });
+    expect(patchSession(pinned, { archived: true })).toMatchObject({ pinned: false, archived: true });
+    expect(patchSession(patchSession(pinned, { archived: true }), { pinned: true })).toMatchObject({ pinned: true, archived: false });
+  });
+  it("does not touch what it was not asked to, and never mutates its input", () => {
+    const before = JSON.stringify(base);
+    expect(patchSession(base, { pinned: true })).toMatchObject({ title: base.title, renamed: false });
+    expect(JSON.stringify(base)).toBe(before);
+  });
+});
+
+describe("what the list knows about a stored session", () => {
+  const events: PanelEvent[] = [
+    { kind: "user", turnId: "t1", text: "  Add a   --verbose flag\nplease " }, { kind: "user", turnId: "t2", text: "and a test" },
+    { kind: "proposal", key: "k1", path: "a.py", why: "w", by: "lead", adds: 1, removes: 0, hunks: [], verdict: {}, applied: { checkpointId: "c", newErrors: [] } },
+    { kind: "proposal", key: "k2", path: "b.py", why: "w", by: "lead", adds: 1, removes: 0, hunks: [], verdict: {}, applied: { checkpointId: "c2", newErrors: [], undone: true } },
+    { kind: "proposal", key: "k3", path: "c.py", why: "w", by: "lead", adds: 1, removes: 0, hunks: [], verdict: {}, dropped: true },
+  ];
+  it("counts messages and applied changes (not undone, not dropped) and keeps the first message", () => {
+    expect(sessionStats(events)).toEqual({ turns: 2, edits: 1, preview: "Add a --verbose flag please" });
+    expect(sessionStats([])).toEqual({ turns: 0, edits: 0, preview: "" });
+  });
+  it("summaryOf and normalizeSummary agree, and old index entries get defaults", () => {
+    const s = { v: 1 as const, id: "s1-abcd", title: "T", createdAt: 5, updatedAt: 9, pinned: true, model: "m/x", turns: 3, edits: 2, preview: "p", events: [] };
+    expect(summaryOf(s)).toEqual({ id: "s1-abcd", title: "T", updatedAt: 9, running: false, createdAt: 5, pinned: true, archived: false, renamed: false, model: "m/x", turns: 3, edits: 2, preview: "p" });
+    expect(normalizeSummary({ id: "s1-abcd", title: "T", updatedAt: 9, running: true })).toEqual({ id: "s1-abcd", title: "T", updatedAt: 9, running: false, createdAt: 9, pinned: false, archived: false, renamed: false, model: "", turns: 0, edits: 0, preview: "" });
+    expect(normalizeSummary({ id: 1, title: "T", updatedAt: 9 })).toBeNull(); expect(normalizeSummary(null)).toBeNull();
+    expect(summaryOf({ ...s, model: undefined, forge: { sessionId: "f", model: "n/y", mode: "agent", instr: "i" } }).model).toBe("n/y");
+  });
 });
