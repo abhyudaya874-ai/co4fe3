@@ -25,14 +25,14 @@ export function fromForge(e: TfEvent, index: EventIndex, ctx: { mode: Mode; serv
       const brief = briefOf(e);                                   // forge/events.ts
       return [
         { kind: "member", threadId: e.threadId, title: e.title, profile: parseProfile(brief, ctx.mode), status: "running" },
-        { kind: "message", id: `to-${e.threadId}`, from: "main", to: e.threadId, text: brief },
+        { kind: "message", id: `to-${e.threadId}`, from: "main", to: e.title, text: brief },
       ];
     }
     case "thread.done": {
       const status: MemberStatus = e.state.status === "done" ? "completed" : "failed";
       return [
         { kind: "member", threadId: e.threadId, title: e.title, status },   // the reducer MERGES member rows
-        { kind: "message", id: `from-${e.threadId}`, from: e.threadId, to: "main", text: textOf(e.state.output?.content) || (e.state.status === "error" ? String(e.state.error ?? "") : "") },
+        { kind: "message", id: `from-${e.threadId}`, from: e.title ?? e.threadId, to: "main", text: textOf(e.state.output?.content) || (e.state.status === "error" ? String(e.state.error ?? "") : "") },
       ];
     }
     case "thread.context_compaction_started":

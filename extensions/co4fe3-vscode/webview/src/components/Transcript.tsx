@@ -21,6 +21,7 @@ export const Transcript = memo(function Transcript({ s, onDecide, onOpen, onVerd
       case "proposal": return h(DiffCard, { key: row.id, e, onDecide, onOpen });
       case "command": return h(CommandCard, { key: row.id, e, onVerdict });
       case "marker": return h(Marker, { key: row.id, e });
+      case "board": return h(BoardCard, { key: row.id, entries: e.entries });
       case "model": return h(ModelBanner, { key: row.id, e });
       default: return null;   // instructions/latency render in the header, not the transcript
     }

@@ -32,9 +32,12 @@ export const MemberRow = memo(function MemberRow({ e }: { e: Extract<PanelEvent,
 });
 
 export const MessageBubble = memo(function MessageBubble({ e }: { e: Extract<PanelEvent, { kind: "message" }> }) {
+  const who = e.from === "main" ? `lead → ${e.to}` : `${e.from} → lead`;
+  const lines = e.text.split("\n");
   return h("div", { className: `row message ${e.from === "main" ? "brief" : "report"}` },
-    h("div", { className: "muted" }, e.from === "main" ? `→ ${e.to}` : `← ${e.from}`),
-    md(e.text));
+    lines.length > 3
+      ? h("details", { className: "msg-collapse" }, h("summary", null, who, " · ", h("span", { className: "muted" }, `${lines.length} lines`)), md(e.text))
+      : h("div", null, h("div", { className: "muted" }, who), md(e.text)));
 });
 
 export const PackCard = memo(function PackCard({ e }: { e: Extract<PanelEvent, { kind: "pack" }> }) {

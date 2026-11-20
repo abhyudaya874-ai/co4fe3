@@ -34,7 +34,7 @@ export class SessionPool {
   private warm_ = new Map<string, { id: string; model: string }>();
   private creating = new Map<string, Promise<{ id: string; model: string }>>();
 
-  constructor(private getClient: () => TrueForge, private spec: (mode: "inline" | "agent", model: string) => AgentSpec) {}
+  constructor(private getClient: () => TrueForge, private spec: (mode: "inline" | "agent" | "ask" | "plan", model: string) => AgentSpec) {}
 
   /** Starts creating a spare session; never throws (the caller only logs). */
   warm(mode: "inline" | "agent", model: string): void {
@@ -57,7 +57,7 @@ export class SessionPool {
 
   /** The chat session for the panel: one per mode, reused across turns. */
   async agent(instructions: string, mode: "agent" | "ask" | "plan", model: string): Promise<{ id: string; model: string }> {
-    const spec = this.spec("agent", model);
+    const spec = this.spec(mode, model);                                // the mode decides the tools (rule 50 §1)
     const { data: session } = await this.getClient().sessions.create({ agent: { spec: { ...spec, instructions } } }, ONCE);
     return { id: session.id, model };
   }

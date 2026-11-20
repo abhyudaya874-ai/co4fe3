@@ -1,8 +1,9 @@
 import * as vscode from "vscode";
 import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet } from "@co4fe3/agent-core";
 import type { PanelEvent, UiCommand } from "@co4fe3/agent-core/panel";
-import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, type TurnOutcome } from "@co4fe3/agent-core";
+import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, toolNameOf, type TurnOutcome } from "@co4fe3/agent-core";
 import type { Bridge } from "./bridge.js";
+import type { Board } from "@co4fe3/agent-core";
 import type { Crew } from "./crew.js";
 import type { PauseDeps, PauseMaker } from "./pause.js";
 import type { Router } from "../forge/router.js";
@@ -15,6 +16,7 @@ export interface AgentTurnDeps {
   host: EditorHost;
   review: ReviewController;
   crew: Crew;
+  board: Board;
   sessions: SessionPool;
   router: Router;
   bridge: Bridge;
@@ -48,6 +50,8 @@ export class AgentTurns {
     bridge.push({ kind: "user", turnId: turnKey, text });
     try {
       const mode = this.d.cfg().mode;                                   // agent | ask | plan, from the header chip (rule 50 §1)
+      this.d.crew.reset(mode);                                          // members and the watchdog belong to one request
+      const toolNames = new Map<string, string>();                      // toolCallId → bare name, for board_write pushes
       const pack = await this.d.packFor(text, this.activePath(), this.recentPaths());   // rule 40: ≤ 800 ms full, else quick, else none
       bridge.push({ kind: "pack", pack });
       const set = await this.d.instructions();
@@ -62,7 +66,11 @@ export class AgentTurns {
       const out: TurnOutcome = await this.d.router.agent(session, message, {
         onEvent: (e, index) => {
           for (const pe of fromForge(e, index, { mode, serverName: this.d.serverName })) bridge.push(pe);
-          this.d.crew.onEvent(e as never);
+          const stop = this.d.crew.onEvent(e);
+          if (e.type === "model.message") for (const c of e.toolCalls ?? []) { const n = toolNameOf(c, this.d.serverName); if (n) toolNames.set(c.id, n); }
+          if (e.type === "tool.response" && toolNames.get(e.toolCallId) === "board_write")
+            bridge.push({ kind: "board", entries: this.d.board.read() });   // the board card updates live (rule 50 §5)
+          if (stop) { bridge.push({ kind: "marker", id: `watch-${e.id}`, text: `Stopped: ${stop}` }); ac.abort(); }   // the crew watchdog (rule 50 §6)
         },
         onPause: this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand }),
       }, ac.signal);

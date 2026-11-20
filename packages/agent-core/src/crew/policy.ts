@@ -13,7 +13,7 @@ export function crewWatch(s: WatchState, e: TfEvent): { s: WatchState; stop: str
 }
 
 const DENY: [RegExp, string][] = [
-  [/\bsudo\b/, "sudo"], [/\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME)(\s|$)/, "recursive delete outside the repo"],
+  [/\bsudo\b/, "sudo"], [/\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME)/, "recursive delete outside the repo"],
   [/\bgit\s+(push|reset\s+--hard|clean\s+-[a-z]*f)/, "history-destroying git"], [/\b(curl|wget)\b[^|]*\|\s*(sh|bash)/, "pipe to shell"],
   [/\b(mkfs|dd\s+if=|shutdown|reboot)\b/, "system command"], [/(^|\s)(env|printenv)(\s|$)/, "prints secrets"],
 ];

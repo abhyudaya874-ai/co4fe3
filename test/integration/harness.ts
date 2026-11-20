@@ -27,7 +27,7 @@ export interface Harness {
   root: string;
   applier: Applier & { last(): Checkpoint | undefined };
   read(rel: string): Promise<string>;
-  turn(text: string, o?: { onReview?: (p: Proposal) => { accept: string[] } | Promise<{ accept: string[] }>; signal?: AbortSignal }): Promise<TurnOutcome>;
+  turn(text: string, o?: { onReview?: (p: Proposal) => { accept: string[] } | Promise<{ accept: string[] }>; signal?: AbortSignal; subAgents?: boolean; onEvent?: (e: TfEvent, index: EventIndex) => void; denyFor?: (p: PendingCall, tool: string | null) => string | null }): Promise<TurnOutcome>;
   close(): Promise<void>;
 }
 
@@ -126,18 +126,20 @@ export async function startHarness(script: Script): Promise<Harness> {
         model: { name: model, params: { temperature: 0, maxTokens: 4096, parallelToolCalls: true } },
         instructions: "You are a coding agent in the user's workspace. Use the editor tools. Be brief.",
         mcpServers: [{ name: mcpName, preload: true, requireApprovalForTools: ["propose_edit", "run_command"] }],
-        config: { askUserQuestions: { enabled: false }, generativeUi: { enabled: false }, dynamicSubAgents: { enabled: false }, iterationLimit: 16 },
+        config: { askUserQuestions: { enabled: false }, generativeUi: { enabled: false }, dynamicSubAgents: { enabled: o?.subAgents ?? false }, iterationLimit: 16 },
       };
       const { data: session } = await client.sessions.create({ agent: { spec } }, { timeoutInSeconds: 15, maxRetries: 0 });
       const events: TfEvent[] = [];
       const hooks = {
-        onEvent: (e: TfEvent, _index: EventIndex): void => { events.push(e); },
+        onEvent: (e: TfEvent, index: EventIndex): void => { events.push(e); o?.onEvent?.(e, index); },
         onPause: async (pending: PendingCall[], _index: EventIndex, signal: AbortSignal) => {
           if (signal.aborted) throw new Error("aborted");
           // The product's pause flow (panel/pause.ts + the propose_edit handler), driven by onReview.
           return await Promise.all(pending.map(async (p): Promise<TrueForgeApi.TurnUserEventMessage> => {
             if (p.kind === "response") return reply(p, "");
             const tool = toolNameOf(p.call, mcpName);
+            const gated = o?.denyFor?.(p, tool);                        // profile/mode gate, same order as pause.ts
+            if (gated) return deny(p, gated);
             if (tool !== "propose_edit") return allow(p);
             const v = ProposeEdit.safeParse(safeJson(p.call?.function?.arguments));
             if (!v.success) return deny(p, "invalid args");

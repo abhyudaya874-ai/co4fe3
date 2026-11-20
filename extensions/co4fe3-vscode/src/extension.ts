@@ -86,7 +86,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   const sessions = new SessionPool(getClient, (mode, model) => buildSpec(                            // 04 pre-warmed sessions
     (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec,
-    { model, editorServer: serverName, mode: "agent", crew: cfg().crew.enabled }));
+    { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled }));   // the mode decides the tools; inline has none via its own file
   const router = new Router(getClient, {                                                            // 04 one model; 08 adds fallback and stats
     order: () => cfg().models.order,
     take: (mode, model) => sessions.take(mode, model),
@@ -113,7 +113,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   let lastSessionUrl: string | undefined;
   const bridgePush = (e: PanelEvent): void => { if (e.kind === "status" && e.sessionUrl) lastSessionUrl = e.sessionUrl; panel.bridge?.push(e); };
   const turns = new AgentTurns({
-    host, review, crew, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
+    host, review, crew, board, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
     cfg, serverName,
     instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
     packFor: (text, active, recent) => packs.packFor(text, active, recent),                  // 06

@@ -46,3 +46,9 @@ body { color: var(--vscode-foreground); font-family: var(--vscode-font-family); 
 .completions { display: flex; flex-direction: column; max-height: 160px; overflow: auto; border: 1px solid var(--vscode-panel-border); border-radius: 4px; margin-bottom: 4px; }
 .completion { text-align: left; background: none; border: none; color: var(--vscode-foreground); padding: 3px 8px; cursor: pointer; font-family: var(--vscode-editor-font-family); font-size: 12px; }
 .completion:hover { background: var(--vscode-list-hoverBackground); }
+.row.member.waiting-approval .chip { animation: co4fe3-pulse 1.2s ease-in-out infinite; }
+@keyframes co4fe3-pulse { 50% { opacity: 0.35; } }
+.row.message { margin: 2px 0 2px 12px; padding-left: 8px; border-left: 2px solid var(--vscode-editorWidget-border, #555); }
+.row.message.brief { border-left-color: var(--vscode-charts-blue, #3794ff); }
+.row.message.report { border-left-color: var(--vscode-charts-green, #89d185); }
+.row.message .msg-collapse summary { cursor: pointer; }
