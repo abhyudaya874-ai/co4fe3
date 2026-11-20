@@ -11,6 +11,8 @@ export class Board {
     return { ok: true };
   }
 
+  /** A new session starts with an empty board. */
+  clear(): void { this.entries.clear(); }
   read(key?: string): BoardEntry[] {
     if (key !== undefined) { const e = this.entries.get(key); return e ? [e] : []; }
     return [...this.entries.values()].sort((a, b) => a.key.localeCompare(b.key));

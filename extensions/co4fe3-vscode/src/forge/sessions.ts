@@ -1,5 +1,6 @@
 import { TrueForge } from "@truefoundry/trueforge-sdk";
-import type { AgentSpec } from "@co4fe3/agent-core";
+import type { AgentSpec, Mode } from "@co4fe3/agent-core";
+import type { ForgeRef } from "@co4fe3/agent-core/panel";
 import { ONCE } from "@co4fe3/agent-core";
 import * as vscode from "vscode";
 import type { McpHttp } from "@co4fe3/agent-core";
@@ -29,12 +30,19 @@ export async function registerEditorServer(getClient: () => TrueForge, name: str
   }
 }
 
+/** Builds the AgentSpec for a session. `project` is the rendered project rules and AGENTS.md, appended to the lead's own instructions. */
+export type SpecFor = (mode: "inline" | "agent" | "ask" | "plan", model: string, project?: string) => AgentSpec;
+
+/** What a chat session was built from. The same values mean the TrueForge session needs no update. */
+export interface ChatWant { project: string; instr: string; mode: Mode; model: string }
+
 /** Pre-warmed sessions, one spare per (mode, model), created while the user is still typing (rule 60, lever 3). */
 export class SessionPool {
   private warm_ = new Map<string, { id: string; model: string }>();
   private creating = new Map<string, Promise<{ id: string; model: string }>>();
+  private known = new Set<string>();                                 // session ids this process created or confirmed
 
-  constructor(private getClient: () => TrueForge, private spec: (mode: "inline" | "agent" | "ask" | "plan", model: string) => AgentSpec) {}
+  constructor(private getClient: () => TrueForge, private spec: SpecFor) {}
 
   /** Starts creating a spare session; never throws (the caller only logs). */
   warm(mode: "inline" | "agent", model: string): void {
@@ -55,17 +63,37 @@ export class SessionPool {
     return await this.create(mode, model);
   }
 
-  /** The chat session for the panel: consumes the composer-focus warm spare when there is one (rule 60 lever 3). */
-  async agent(instructions: string, mode: "agent" | "ask" | "plan", model: string): Promise<{ id: string; model: string }> {
-    const spec = { ...this.spec(mode, model), instructions };           // the mode decides the tools (rule 50 §1)
-    const s = await this.take("agent", model);                          // warm spare, or a fresh create (take retries once)
-    await this.getClient().sessions.update(s.id, { agent: { spec } }, ONCE).catch(() => undefined);   // stale file instructions are an acceptable fallback
-    return { id: s.id, model };
+  /**
+   * The chat session for one message. The conversation keeps ONE TrueForge session, so a follow-up sees the earlier turns
+   * (verified live: a second turn recalls the first, and a spec update keeps the history). `prev` is the session behind the
+   * transcript; it is reused when it still exists, and only its spec is updated when the mode, the model or the project
+   * rules changed. Otherwise a session is created, using the composer-focus warm spare when there is one (rule 60 lever 3).
+   */
+  async chat(prev: ForgeRef | undefined, want: ChatWant): Promise<ForgeRef> {
+    const spec = this.spec(want.mode, want.model, want.project);          // the mode decides the tools (rule 50 §1)
+    if (prev && (await this.alive(prev.sessionId))) {
+      if (prev.mode === want.mode && prev.instr === want.instr && prev.model === want.model) return prev;
+      try {
+        await this.getClient().sessions.update(prev.sessionId, { agent: { spec } }, ONCE);
+        return { sessionId: prev.sessionId, model: want.model, mode: want.mode, instr: want.instr };
+      } catch { /* the session cannot be changed: continue the transcript on a new one */ }
+    }
+    const s = await this.take("agent", want.model);                      // warm spare, or a fresh create (take retries once)
+    await this.getClient().sessions.update(s.id, { agent: { spec } }, ONCE).catch(() => undefined);   // the spare's own spec is an acceptable fallback
+    this.known.add(s.id);
+    return { sessionId: s.id, model: want.model, mode: want.mode, instr: want.instr };
+  }
+
+  /** A session id from a stored transcript may be gone (TrueForge restarted): ask once, remember the answer. */
+  private async alive(id: string): Promise<boolean> {
+    if (this.known.has(id)) return true;
+    try { await this.getClient().sessions.get(id, ONCE); this.known.add(id); return true; } catch { return false; }
   }
 
   private async create(mode: "inline" | "agent", model: string): Promise<{ id: string; model: string }> {
     const spec = this.spec(mode, model);
     const { data: session } = await this.getClient().sessions.create({ agent: { spec } }, ONCE);
+    this.known.add(session.id);
     return { id: session.id, model };
   }
 }

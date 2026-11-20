@@ -1,25 +1,39 @@
 import type { TfEvent, EventIndex } from "./turn.js";
+import type { TrueForgeApi } from "@truefoundry/trueforge-sdk";
 import { messageText, toolNameOf, briefOf } from "./events.js";
 import { textOf } from "./turn.js";
 import { parseProfile, type Mode } from "../runtime/modes.js";
 import type { MemberStatus } from "../crew/evidence.js";
 import type { PanelEvent } from "../panel/events.js";
 
+/** The tool call with this id, found inside the model.message that issued it (newest message first). */
+export function findToolCall(index: EventIndex, toolCallId: string): TrueForgeApi.ToolCall | undefined {
+  const events = [...index.values()];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const m = events[i] as { type?: string; toolCalls?: TrueForgeApi.ToolCall[] };
+    if (m.type !== "model.message") continue;
+    const hit = m.toolCalls?.find((c) => c.id === toolCallId);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 /** Maps one TrueForge event to PanelEvents. Pure; the webview never sees SDK types. */
 export function fromForge(e: TfEvent, index: EventIndex, ctx: { mode: Mode; serverName?: string }): PanelEvent[] {
   switch (e.type) {
-    case "model.message": {
-      const out: PanelEvent[] = [{ kind: "text", id: e.id, threadId: e.threadId, text: messageText(index, e.id), reasoning: String((e as { reasoningContent?: unknown }).reasoningContent ?? "") }];
-      for (const c of e.toolCalls ?? []) {
+    case "model.message":
+    case "model.message.delta": {                                 // deltas merge into the base in the index; emit the row on every event
+      const base = index.get(e.id) as { reasoningContent?: unknown; toolCalls?: TrueForgeApi.ToolCall[] } | undefined;
+      const out: PanelEvent[] = [{ kind: "text", id: e.id, threadId: e.threadId, text: messageText(index, e.id), reasoning: String(base?.reasoningContent ?? "") }];
+      for (const c of base?.toolCalls ?? []) {
         if (toolNameOf(c, ctx.serverName ?? "") === null && c.toolInfo?.type !== "truefoundry-system") continue;
         out.push({ kind: "tool", id: c.id, threadId: e.threadId, name: c.toolInfo?.name ?? "?", args: String(c.function?.arguments ?? ""), state: "running" });
       }
       return out;
     }
     case "tool.response": {
-      const call = (index.get(e.toolCallId) as { name?: string } | undefined);
-      const text = textOf(e.content);
-      return [{ kind: "tool", id: e.toolCallId, threadId: e.threadId, name: call?.name ?? "?", args: "", state: "ok", result: text }];
+      const call = findToolCall(index, e.toolCallId);          // the index is keyed by EVENT id; the call lives inside a model.message
+      return [{ kind: "tool", id: e.toolCallId, threadId: e.threadId, name: call?.toolInfo?.name ?? call?.function?.name ?? "tool", args: String(call?.function?.arguments ?? ""), state: "ok", result: textOf(e.content) }];
     }
     case "thread.created": {
       const brief = briefOf(e);                                   // forge/events.ts

@@ -1,23 +1,37 @@
 import * as vscode from "vscode";
-import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, applyHunks, buildSpec, newErrors, renderProblem, type Applier, type FileChange, type Proposal, type AgentSpec } from "@co4fe3/agent-core";
+import * as path from "node:path";
+import { randomBytes } from "node:crypto";
+import { makeClient, startMcpHttp, createEditorMcpServer, ReviewStore, Board, TurnPolicy, CheckpointLog, toHunks, planEdit, previewLines, buildSpec, renderProblem, proposalEvent, settleProposalEvent, modelRows, sessionUrl, selectedLines, type Proposal, type AgentSpec } from "@co4fe3/agent-core";
 import { readConfig } from "./config.js";
 import { StatusItems } from "./status.js";
 import { createEditorHost, currentText } from "./host/editorHost.js";
 import { mcpServerNameFor, registerEditorServer, SessionPool } from "./forge/sessions.js";
 import { Router } from "./forge/router.js";
+import { ModelCatalog } from "./forge/catalog.js";
 import { createApplier, applyDecision, saveCheckpoints } from "./review/apply.js";
 import { createReviewController } from "./review/controller.js";
 import { registerInlineEdit } from "./inline/inlineEdit.js";
-import { PanelView } from "./panel/panelView.js";
+import { DockView, AgentWindow } from "./panel/panelView.js";
 import { AgentTurns } from "./panel/agentTurn.js";
 import { Crew } from "./panel/crew.js";
-import type { Bridge } from "./panel/bridge.js";
-import { makeOnPause, jailedPathArg, type PauseDeps } from "./panel/pause.js";
+import { FileSessionStore } from "./panel/sessionStore.js";
+import { createUiCommands, pickModelQuick } from "./panel/uiCommands.js";
+import { LayoutController } from "./layout/layoutController.js";
+import { makeOnPause } from "./panel/pause.js";
 import { loadInstructions, commandPolicy, deny, allow, safeJson, RunCommand, indexFile, rankFiles, type PendingCall, type TrueForgeApi } from "@co4fe3/agent-core";
-import type { UiCommand, PanelEvent } from "@co4fe3/agent-core/panel";
+import { Hub, UI_MODES, runtimeOf, uiModeOf, nextUiMode, type HubPort, type HostMessage, type UiMode } from "@co4fe3/agent-core/panel";
 import { IndexStore, ContextPacks, indexWorkspaceInBackground } from "./context/indexer.js";
 import inlineAgent from "../../../agents/co4fe3-inline.agent.json";
 import coderAgent from "../../../agents/co4fe3-coder.agent.json";
+
+let shutdown: (() => Promise<void>) | undefined;
+
+/** `secondarySidebar` views exist from VS Code 1.106. Older hosts get the chat in the activity bar instead. */
+const supportsSecondarySidebar = (version: string): boolean => {
+  const [major = 0, minor = 0] = version.split(".").map((n) => Number.parseInt(n, 10));
+  return major > 1 || (major === 1 && minor >= 106);
+};
+const newSessionId = (): string => `s${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
 
 // Wiring only (rule 10). Each workflow adds its lines to activate(); nothing slow is awaited here (< 150 ms).
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
@@ -36,6 +50,26 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     if (u !== clientUrl) { clientUrl = u; client = makeClient(u); }
     return client;
   };
+
+  // The transcript's single source of truth, and where stored sessions live (the extension's own folder, not the workspace).
+  const sessionsDir = path.join((ctx.storageUri ?? ctx.globalStorageUri).fsPath, "sessions");
+  const sessionStore = new FileSessionStore(sessionsDir, (l) => out.info(l));
+  const hub = new Hub({ store: sessionStore, now: () => Date.now(), newId: newSessionId });
+  ctx.subscriptions.push({ dispose: () => hub.dispose() });
+
+  // The composer's mode (Code / Ask / Plan / Bypass) lives here and in globalState, never in a settings file.
+  const stored = ctx.globalState.get<string>("co4fe3.uiMode");
+  let uiMode: UiMode = UI_MODES.some((m) => m.id === stored) ? (stored as UiMode) : uiModeOf(cfg().mode, cfg().autoApprove.terminal);
+  const modeLabel = (m: UiMode): string => UI_MODES.find((x) => x.id === m)?.label ?? m;
+  const setUiMode = (m: UiMode): void => {
+    if (m === uiMode) return;
+    uiMode = m; void ctx.globalState.update("co4fe3.uiMode", m);
+    hub.setChrome({ mode: m }); status.setMode(modeLabel(m));
+  };
+  status.setMode(modeLabel(uiMode));
+  hub.setChrome({ mode: uiMode, folder: vscode.workspace.workspaceFolders?.[0]?.name ?? "" });
+  const autoApproveCommands = (): boolean => runtimeOf(uiMode).autoApproveCommands || cfg().autoApprove.terminal;
+
   const checkpoints = new CheckpointLog();                                                       // 03 agent-core review/checkpoints.ts
   const persist = (rel?: string): void => {
     saveCheckpoints(ctx.storageUri, JSON.stringify(checkpoints.toJSON()));
@@ -69,6 +103,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const instrWatch = vscode.workspace.createFileSystemWatcher("{AGENTS.md,CLAUDE.md,.github/*.md,.cursorrules,.v3coderules,.voidrules,.co4fe3/**,.devin/**,.v3code/**}");
   instrWatch.onDidCreate(() => { instructionsStale = true; }); instrWatch.onDidChange(() => { instructionsStale = true; }); instrWatch.onDidDelete(() => { instructionsStale = true; });
   ctx.subscriptions.push(instrWatch);
+  const approvedCommands: { id: string; command: string; turn: string }[] = [];                   // approved by the user (or by Bypass), not yet started
   const mcp = await startMcpHttp(() => createEditorMcpServer({
     host, applier, review: review.store, board,
     index: () => index.get(),
@@ -76,12 +111,31 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     turn: () => turnRef.current,
     changes: (turnId) => applier.ofTurn(turnId),
     log: (l) => out.info(l),
+    onCommand: (command) => {                                                                    // the card of the command that is about to run: its output fills in while it runs
+      for (let n = approvedCommands.length - 1; n >= 0; n--) if (approvedCommands[n]!.turn !== turnRef.current.id) approvedCommands.splice(n, 1);   // left over from an earlier turn
+      const i = approvedCommands.findIndex((c) => c.command === command);
+      if (i < 0) return undefined;
+      const { id } = approvedCommands.splice(i, 1)[0]!;
+      return { output: (text) => hub.push({ kind: "command", id, command, state: "running", output: text }), done: () => undefined };
+    },
+    onApplied: (a) => {                                                                          // the diff card learns the checkpoint and the verify verdict
+      const last = hub.proposal(a.key);
+      if (last) hub.push(settleProposalEvent(last, { applied: { checkpointId: a.checkpointId, newErrors: a.newErrors } }));
+      if (shownInEditor.has(a.key)) settleEditorDiff(a.key, a.path, true);                       // the diff closes and the real file opens at the change
+      else if (wantsEditorDiff()) void review.reveal(a.path, firstChangedLine.get(a.key) ?? last?.hunks[0]?.oldStart ?? 0);
+    },
   }), (l) => out.info(l));                                                                       // 02 binds 127.0.0.1:0 only
   ctx.subscriptions.push({ dispose: () => void mcp.close() });
   const serverName = mcpServerNameFor(host.root);                                                // 02 "co4fe3-ws-<8 hex>"
-  void registerEditorServer(getClient, serverName, mcp, status, out);                          // 02 retries forever; never awaited
+  const tfStatus = {                                                                             // the status bar and the chat show the same TrueForge state
+    setTrueforge: (s: "connected" | "waiting" | "down" | "starting", d: string): void => { status.setTrueforge(s, d); hub.setChrome({ trueforge: s }); },
+    setTools: (n: number): void => { status.setTools(n); hub.setChrome({ trueforge: "connected" }); },
+  };
+  void registerEditorServer(getClient, serverName, mcp, tfStatus, out);                          // 02 retries forever; never awaited
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {                      // a URL change re-registers (P8)
-    if (e.affectsConfiguration("co4fe3.trueforge.url")) void registerEditorServer(getClient, serverName, mcp, status, out);
+    if (e.affectsConfiguration("co4fe3.trueforge.url")) void registerEditorServer(getClient, serverName, mcp, tfStatus, out);
+    if (e.affectsConfiguration("co4fe3.models")) refreshModel();
+    if (e.affectsConfiguration("co4fe3.mode")) setUiMode(uiModeOf(cfg().mode, false));          // an explicit change of the setting wins over the last choice in the chat
   }));
   ctx.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => {                        // 06 re-index on save
     const rel = vscode.workspace.asRelativePath(doc.uri, false);
@@ -92,51 +146,95 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   }));
   registerReviewCommands(ctx, { review, applier, checkpoints, index, out });                             // 03 commands
 
-  const specFor = (mode: "inline" | "agent" | "ask" | "plan", model: string): AgentSpec => buildSpec(   // 04 the inline-spec factory
-    (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec,
-    { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled });   // the mode decides the tools; inline has none via its own file
+  // Diff cards in the chat follow the review store, whoever decides (a card button, CodeLens, a keybinding). In Editor mode the
+  // change also opens in the editor the moment it is proposed (nothing is written before it is accepted: law 4), and the
+  // diff goes away once it is decided.
+  const shownInEditor = new Set<string>();
+  const wantsEditorDiff = (): boolean => layout.layout === "editor" && cfg().editor.openDiffs;
+  const settleEditorDiff = (key: string, rel: string | undefined, applied: boolean): void => {
+    if (!shownInEditor.delete(key)) return;
+    void review.close(key).then(() => { if (applied && rel && wantsEditorDiff()) return review.reveal(rel, firstChangedLine.get(key) ?? 0); });
+  };
+  const firstChangedLine = new Map<string, number>();
+  ctx.subscriptions.push({ dispose: review.store.onChange((key) => {
+    const p = review.store.get(key);
+    if (p) {
+      if (p.by === "inline") return;                                                             // inline edits review in the editor's own widget
+      hub.push(proposalEvent(p));
+      const pending = p.hunks.some((h) => p.verdict[h.id] === "pending");
+      if (pending && !shownInEditor.has(key) && wantsEditorDiff()) {
+        shownInEditor.add(key);
+        firstChangedLine.set(key, p.hunks[0]?.oldStart ?? 0);
+        void review.show(key);                                                                   // opens this proposal's diff, without taking focus
+      } else if (!pending) settleEditorDiff(key, p.path, false);                                 // decided: the write follows through propose_edit; onApplied reveals the file
+      return;
+    }
+    const last = hub.proposal(key);                                                              // gone from the store: dropped (Stop, turn end) or taken by propose_edit
+    if (last && !last.applied) { const dropped = settleProposalEvent(last, { dropped: true }); if (dropped !== last) hub.push(dropped); }
+    if (last) settleEditorDiff(key, last.path, false);
+  }) });
+
+  /** `project` = the rendered project rules and AGENTS.md. The lead's own instructions (the crew protocol) always stay in front of them. */
+  const specFor = (mode: "inline" | "agent" | "ask" | "plan", model: string, project?: string): AgentSpec => {
+    const file = (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec;
+    const base = String(file.instructions ?? "");
+    return buildSpec(file, { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled,
+      ...(mode !== "inline" && project ? { instructions: `${base}\n\n${project}` } : {}) });       // the mode decides the tools; inline has none via its own file
+  };
   const sessions = new SessionPool(getClient, specFor);                                             // 04 pre-warmed sessions
-  let discoveredOrder: string[] = [];                                                             // models.order unset → first two TF lists
-  const modelOrder = (): string[] => cfg().models.order.length ? cfg().models.order : discoveredOrder;
-  void getClient().models.list().then(({ data }) => { discoveredOrder = data.slice(0, 2).map((m) => m.name); refreshModel(); }).catch(() => undefined);
+  const catalog = new ModelCatalog(ctx, getClient, cfg, (l) => out.info(l), () => refreshModel());   // what TrueForge serves, the user's pick, recents
+  ctx.subscriptions.push({ dispose: () => catalog.dispose() });
   const router = new Router(ctx, getClient, {                                                       // 08 fallback + stats + benched order
-    order: modelOrder,
-    autoOrderInline: () => cfg().latency.autoOrderInline,
+    order: () => catalog.order(),
+    autoOrderInline: () => cfg().latency.autoOrderInline && catalog.pick === null,   // a model the user picked in the chat is not re-ordered away
     hedgeInline: () => cfg().latency.hedgeInline,
     take: (mode, model) => sessions.take(mode, model),
     warm: (mode, model) => sessions.warm(mode, model),
-    specFor,
     log: (l) => { out.info(l); refreshModel(); },                                    // stats change on every note
   });
+  const modelsMessage = (): HostMessage => ({
+    type: "models", rows: modelRows(catalog.served, router.statsMap(), Date.now(), catalog.recent),
+    current: router.order("agent")[0] ?? "", auto: catalog.pick === null,
+  });
   const refreshModel = (): void => {
-    const order = router.order("inline");
-    const primary = modelOrder()[0];
+    const primary = router.order("agent")[0];
     const b = primary ? router.benched(primary) : undefined;
-    status.setModel(order[0] ?? "(no model)", b ? { until: b.benchedUntil, why: b.lastError ?? "failed" } : undefined);
+    status.setModel(primary ?? "(no model)", b ? { until: b.benchedUntil, why: b.lastError ?? "failed" } : undefined);
+    hub.setChrome({ model: primary ?? "" });                                                    // the chip tracks the current primary
+    hub.broadcast(modelsMessage());
   };
   refreshModel();
-  const panel = new PanelView(ctx);                                                              // 05 the webview
-  const crew = new Crew(cfg().mode, (e) => panel.bridge?.push(e));
+  void catalog.discover();                                                                      // retries until TrueForge answers (it may start after VS Code)
+
+  const crew = new Crew(runtimeOf(uiMode).mode, (e) => hub.push(e));
+  const pendingCommands = new Map<string, (v: "allow" | "deny") => void>();
   const approveCommand = async (p: PendingCall, signal: AbortSignal): Promise<TrueForgeApi.TurnUserEventMessage> => {
     const v = RunCommand.safeParse(safeJson(p.call?.function?.arguments));
     const command = v.success ? v.data.command : String(p.call?.function?.arguments ?? "").slice(0, 200);
-    const policy = commandPolicy(command);
-    if (!policy.ok) return deny(p, `Refused by the command policy: ${policy.why}.`);
-    if (cfg().autoApprove.terminal) return allow(p);
     const id = `cmd-${p.toolCallId}`;
-    panel.bridge?.push({ kind: "command", id, command, state: "asking" });
+    const verdict0 = commandPolicy(command);
+    if (!verdict0.ok) {
+      hub.push({ kind: "command", id, command, state: "denied", output: `Refused by the command policy: ${verdict0.why}.` });
+      return deny(p, `Refused by the command policy: ${verdict0.why}.`);
+    }
+    if (autoApproveCommands()) {                                                                 // Bypass Permissions: no question, but the card is there from the start
+      approvedCommands.push({ id, command, turn: turnRef.current.id });
+      hub.push({ kind: "command", id, command, state: "running" });
+      return allow(p);
+    }
+    hub.push({ kind: "command", id, command, state: "asking" });
     const verdict = await new Promise<"allow" | "deny">((resolve) => {
       pendingCommands.set(id, resolve);
       signal.addEventListener("abort", () => resolve("deny"), { once: true });
     });
-    panel.bridge?.push({ kind: "command", id, command, state: verdict === "allow" ? "running" : "denied" });
+    pendingCommands.delete(id);
+    if (verdict === "allow") approvedCommands.push({ id, command, turn: turnRef.current.id });
+    hub.push({ kind: "command", id, command, state: verdict === "allow" ? "running" : "denied" });
     return verdict === "allow" ? allow(p) : deny(p, "The user denied this command.");
   };
-  const pendingCommands = new Map<string, (v: "allow" | "deny") => void>();
-  let lastSessionUrl: string | undefined;
-  const bridgePush = (e: PanelEvent): void => { if (e.kind === "status" && e.sessionUrl) lastSessionUrl = e.sessionUrl; panel.bridge?.push(e); };
   const turns = new AgentTurns({
-    host, review, crew, board, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
+    host, review, crew, board, sessions, router, hub, specFor,
+    uiMode: () => uiMode,
     cfg, serverName,
     instructions,
     packFor: (text, active, recent) => packs.packFor(text, active, recent),                  // 06
@@ -144,83 +242,89 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     turn: turnRef,
     recent: () => changedPaths,
     approveCommand, out,
+    answered: (m) => catalog.noteAnswered(m),
   }, makeOnPause);
-  panel.onCommand = (m: UiCommand) => {                                                            // 05 the UiCommand switch
-    switch (m.type) {
-      case "ready": panel.bridge?.flush(); break;
-      case "send": void turns.send(m.text); break;
-      case "focus": { const m0 = router.order("agent")[0]; if (m0) sessions.warm("agent", m0); break; }   // lever 3
-      case "stop": turns.stop(); break;
-      case "decide": {
-        const p = review.store.get(m.key);
-        if (p) { review.store.decide(m.key, m.hunkId, m.verdict); review.refresh(p.path, m.key); }
-        break;
-      }
-      case "decideAll": {
-        const p = review.store.get(m.key);
-        if (p) { review.store.decideAll(m.key, m.verdict); review.refresh(p.path, m.key); }
-        break;
-      }
-      case "openDiff": {
-        const p = review.store.get(m.key);
-        if (p) void vscode.commands.executeCommand("vscode.diff", p.before === null ? vscode.Uri.from({ scheme: "co4fe3-proposal", path: `/${p.path}`, query: `key=${p.key}&side=empty` }) : vscode.Uri.file(`${host.root}/${p.path}`), vscode.Uri.from({ scheme: "co4fe3-proposal", path: `/${p.path}`, query: `key=${p.key}&side=right` }), `${p.path} ↔ proposed by ${p.by}`);
-        break;
-      }
-      case "command": {
-        const resolve = pendingCommands.get(m.id);
-        if (resolve) { pendingCommands.delete(m.id); resolve(m.verdict); }
-        break;
-      }
-      case "undo": void applier.undo(m.checkpointId); break;
-      case "revertTurn": for (const cp of applier.ofTurn(m.turnId)) void applier.undo(cp.id); break;
-      case "openSession": {
-        const url = lastSessionUrl;
-        if (url) void vscode.env.openExternal(vscode.Uri.parse(url));
-        break;
-      }
-      case "pickModel": void vscode.commands.executeCommand("co4fe3.pickModel"); break;
-      case "setMode": void vscode.workspace.getConfiguration("co4fe3").update("mode", m.mode); break;
-      case "complete": {
-        const pfx = m.prefix.toLowerCase();
-        const items: string[] = [];
-        if (m.kind === "@") {
-          const ix = index.get();                                    // files first, then symbols, ≤ 20 (rule 40)
-          if (ix) {
-            const files = [...ix.byPath.keys()].filter((p) => p.toLowerCase().includes(pfx)).sort((a, b) => a.length - b.length || a.localeCompare(b));
-            const syms = [...ix.defs.keys()].filter((n) => n.toLowerCase().includes(pfx)).sort();
-            items.push(...files, ...syms.map((n) => `symbol:${n}`));
-          }
-        } else {
-          for (const i of lastInstructions?.items ?? []) {
-            if (i.kind === "workflow" && i.name.toLowerCase().startsWith(pfx)) items.push(i.name);
-          }
-        }
-        panel.completions(m.kind, items.slice(0, 20));
-        break;
-      }
-    }
+
+  // Where the chat lives: docked beside the editor, or filling the window. Both show the same Hub.
+  const legacyDock = !supportsSecondarySidebar(vscode.version);
+  void vscode.commands.executeCommand("setContext", "co4fe3.legacyDock", legacyDock);
+  const afterSessionChange = (): void => {
+    board.clear();
+    hub.setChrome({ sessionUrl: hub.forge ? sessionUrl(cfg().trueforge.url, hub.forge.sessionId) : null });
   };
-  ctx.subscriptions.push(vscode.window.registerWebviewViewProvider(PanelView.id, panel, { webviewOptions: { retainContextWhenHidden: true } }));
+  afterSessionChange();
+  const attach = (port: HubPort): vscode.Disposable => new vscode.Disposable(hub.attach(port));
+  const onCommand = createUiCommands({
+    host, hub, turns, review, applier, router, sessions, catalog,
+    index: () => index.get(),
+    instructionItems: () => lastInstructions?.items ?? [],
+    pendingCommands, setUiMode,
+    enterLayout: (l) => layout.enter(l),
+    afterSessionChange, modelsMessage, log: (l) => out.info(l),
+  });
+  const dock = new DockView(ctx, attach, onCommand, (l) => out.info(l));
+  const agentWindow = new AgentWindow(ctx, attach, onCommand, (l) => out.info(l));
+  const dockFocus = (): Thenable<unknown> => vscode.commands.executeCommand(legacyDock ? `${DockView.legacyId}.focus` : `${DockView.id}.focus`);
+  const layout = new LayoutController(ctx, {
+    hideChrome: () => cfg().agentMode.hideChrome,
+    openAgentWindow: () => agentWindow.open(),
+    closeAgentWindow: () => agentWindow.close(),
+    showDock: dockFocus,
+    log: (l) => out.info(l),
+    onChange: (l) => {
+      hub.setChrome({ layout: l }); status.setLayout(l);
+      if (l === "editor" && cfg().editor.openDiffs) void review.openPending().then(() => { for (const p of review.store.all()) if (p.by !== "inline" && p.hunks.some((h) => p.verdict[h.id] === "pending")) shownInEditor.add(p.key); });
+    },
+  });
+  agentWindow.onUserClosed = () => void layout.enter("editor");                                    // closing the tab leaves Agent mode and puts the settings back
+  void layout.recover();                                                                          // a window that died in Agent mode left its settings hidden
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("co4fe3.pickModel", () => pickModel()),
-    vscode.commands.registerCommand("co4fe3.resetStats", () => { router.resetStats(); refreshModel(); void vscode.window.showInformationMessage("co4fe3: model stats cleared."); }),
+    vscode.window.registerWebviewViewProvider(DockView.id, dock, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.window.registerWebviewViewProvider(DockView.legacyId, dock, { webviewOptions: { retainContextWhenHidden: true } }),
   );
-  /** The model picker: TrueForge's list, stats in the description, two picks → models.order (rule 70 §5). */
-  async function pickModel(): Promise<void> {
-    const { data: models } = await getClient().models.list().catch(() => ({ data: [] as { name: string }[] }));
-    if (!models.length) return void vscode.window.showWarningMessage("No models from TrueForge — is it running?");
-    const items = models.map((m) => {
-      const s = router.stat(m.name);
-      const sorted = s ? [...s.ttft].sort((a, b) => a - b) : [];
-      const p50 = sorted.length >= 3 ? `p50 ${(sorted[Math.floor(sorted.length / 2)]! / 1000).toFixed(1)} s` : "no samples";
-      const benched = s && s.benchedUntil > Date.now() ? ` · benched ${Math.ceil((s.benchedUntil - Date.now()) / 60000)} min` : "";
-      return { label: m.name, description: `${p50} · ${s?.ok ?? 0} ok${s?.fail ? ` · ${s.fail} failed` : ""}${benched}` };
-    });
-    const first = await vscode.window.showQuickPick(items, { title: "co4fe3: primary model", placeHolder: "Used first for every request" });
-    if (!first) return;
-    const second = await vscode.window.showQuickPick(items.filter((i) => i.label !== first.label), { title: "co4fe3: fallback model", placeHolder: "Tried when the primary fails (Esc keeps none)" });
-    await vscode.workspace.getConfiguration("co4fe3").update("models.order", second ? [first.label, second.label] : [first.label], vscode.ConfigurationTarget.Workspace);
-    refreshModel();
+
+  // The editor's selection, offered in the composer as a chip (file#L13-15).
+  let selTimer: NodeJS.Timeout | undefined;
+  const syncSelection = (): void => {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(() => {
+      const ed = vscode.window.activeTextEditor;
+      if (!ed || ed.document.uri.scheme !== "file" || ed.selection.isEmpty) return void hub.setChrome({ selection: null });
+      const rel = vscode.workspace.asRelativePath(ed.document.uri, false);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) return void hub.setChrome({ selection: null });
+      const lines = selectedLines(ed.selection);                                              // a selection that ends at column 0 does not include that line
+      hub.setChrome({ selection: { path: rel.split(path.sep).join("/"), start: lines.start + 1, end: lines.end + 1 } });
+    }, 120);
+  };
+  ctx.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(syncSelection), vscode.window.onDidChangeActiveTextEditor(syncSelection), { dispose: () => clearTimeout(selTimer) });
+
+  ctx.subscriptions.push(
+    vscode.commands.registerCommand("co4fe3.pickModel", () => pickModelQuick({ catalog, router })),
+    vscode.commands.registerCommand("co4fe3.resetStats", () => { router.resetStats(); refreshModel(); void vscode.window.showInformationMessage("co4fe3: model stats cleared."); }),
+    vscode.commands.registerCommand("co4fe3.cycleMode", () => setUiMode(nextUiMode(uiMode))),
+    vscode.commands.registerCommand("co4fe3.agentMode", () => layout.enter("agent")),
+    vscode.commands.registerCommand("co4fe3.editorMode", () => layout.enter("editor")),
+    vscode.commands.registerCommand("co4fe3.toggleLayout", () => layout.toggle()),
+    vscode.commands.registerCommand("co4fe3.focusChat", () => layout.layout === "agent" ? agentWindow.open() : dockFocus()),
+    vscode.commands.registerCommand("co4fe3.newSession", () => { if (hub.newSession()) afterSessionChange(); else void vscode.window.showInformationMessage("Stop the running request first."); }),
+    vscode.commands.registerCommand("co4fe3.sessionHistory", async () => {
+      const items = hub.summaries().map((s) => ({ label: s.title, description: s.id === hub.activeId ? "current" : "", id: s.id }));
+      if (!items.length) return void vscode.window.showInformationMessage("No sessions yet.");
+      const pick = await vscode.window.showQuickPick(items, { title: "co4fe3: sessions", placeHolder: "Open a session" });
+      if (pick && pick.id !== hub.activeId && await hub.switchTo(pick.id)) afterSessionChange();
+    }),
+    vscode.commands.registerCommand("co4fe3.openSession", () => { const u = hub.chrome.sessionUrl; if (u) void vscode.env.openExternal(vscode.Uri.parse(u)); }),
+    vscode.commands.registerCommand("co4fe3.startTrueForge", () => {                                // runs in a neutral folder, never the user's repo
+      const cwd = ctx.globalStorageUri.fsPath;
+      void vscode.workspace.fs.createDirectory(ctx.globalStorageUri).then(() => {
+        const t = vscode.window.createTerminal({ name: "TrueForge", cwd });
+        t.show(); t.sendText(cfg().trueforge.command);
+      });
+    }),
+  );
+  if (!ctx.globalState.get<boolean>("co4fe3.dockShown")) {                                          // first run: show where the chat lives
+    void ctx.globalState.update("co4fe3.dockShown", true);
+    setTimeout(() => void dockFocus(), 1500);
   }
   registerInlineEdit(ctx, {                                                                      // 04 Task A
     host, review, sessions, router, out,
@@ -233,11 +337,17 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       });
     },
     index: () => index.get(),
+    pickModel: () => pickModelQuick({ catalog, router }),
     cfg,
   });
+  shutdown = async () => {
+    await layout.leave();                                                                        // never leave the user with hidden chrome
+    hub.dispose();                                                                               // writes the active session
+    await sessionStore.settled();
+  };
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> { await shutdown?.(); }
 
 interface ReviewDeps {
   review: ReturnType<typeof createReviewController>;
@@ -259,8 +369,8 @@ function registerReviewCommands(ctx: vscode.ExtensionContext, d: ReviewDeps): vo
     vscode.commands.registerCommand("co4fe3.hunk.reject", (key, hunkId) => decide(key, hunkId, "rejected")),
     vscode.commands.registerCommand("co4fe3.hunk.acceptAtCursor", () => decideAtCursor(d, "accepted", decide)),
     vscode.commands.registerCommand("co4fe3.hunk.rejectAtCursor", () => decideAtCursor(d, "rejected", decide)),
-    vscode.commands.registerCommand("co4fe3.proposal.acceptAll", () => decideAllAtCursor(d, "accepted")),
-    vscode.commands.registerCommand("co4fe3.proposal.rejectAll", () => decideAllAtCursor(d, "rejected")),
+    vscode.commands.registerCommand("co4fe3.proposal.acceptAll", (key?: string) => decideAllAtCursor(d, "accepted", key)),
+    vscode.commands.registerCommand("co4fe3.proposal.rejectAll", (key?: string) => decideAllAtCursor(d, "rejected", key)),
     vscode.commands.registerCommand("co4fe3.undoLast", async () => {
       const last = d.applier.last();
       if (!last) return void vscode.window.showInformationMessage("Nothing to undo yet.");
@@ -304,10 +414,13 @@ function decideAtCursor(d: ReviewDeps, v: "accepted" | "rejected", decide: (key:
   });
   if (hit) decide(key, hit.id, v);
 }
-function decideAllAtCursor(d: ReviewDeps, v: "accepted" | "rejected"): void {
-  const ed = vscode.window.activeTextEditor;
-  if (!ed || ed.document.uri.scheme !== "co4fe3-proposal") return;
-  const key = new URLSearchParams(ed.document.uri.query).get("key") ?? "";
+function decideAllAtCursor(d: ReviewDeps, v: "accepted" | "rejected", given?: string): void {
+  let key = typeof given === "string" ? given : "";                  // a CodeLens passes the proposal's key
+  if (!key) {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed || ed.document.uri.scheme !== "co4fe3-proposal") return;
+    key = new URLSearchParams(ed.document.uri.query).get("key") ?? "";
+  }
   if (d.review.store.get(key)) {
     d.review.store.decideAll(key, v);
     const p = d.review.store.get(key);

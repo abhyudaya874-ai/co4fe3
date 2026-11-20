@@ -7,27 +7,32 @@ import type { Note } from "../forge/fallback.js";
 
 export type { Mode };
 
-export type HunkView = { id: string; oldStart: number; oldLines: string[]; newLines: string[] };
+/** One change block for the diff card. `before`/`after` are up to two unchanged lines either side (context); lines keep no newline. */
+export type HunkView = { id: string; oldStart: number; oldLines: string[]; newLines: string[]; before?: string[]; after?: string[]; hidden?: number };   // hidden: lines left out of oldLines/newLines (very long hunks)
 
 export type PanelEvent =
-  | { kind: "user"; turnId: string; text: string }
+  | { kind: "user"; turnId: string; text: string; attach?: { path: string; start: number; end: number } }   // attach: the editor selection sent with it (1-based lines)
   | { kind: "text"; id: string; threadId: string; text: string; reasoning: string }            // snapshot of one model.message (same id replaces)
   | { kind: "tool"; id: string; threadId: string; name: string; args: string; state: "running" | "ok" | "error"; result?: string; ms?: number }
   | { kind: "member"; threadId: string; title: string; profile?: Profile; status: MemberStatus; reason?: string }   // reducer MERGES member rows (rule 50 §4)
   | { kind: "message"; id: string; from: string; to: string; text: string }                     // brief (to-<thread>) / report (from-<thread>)
-  | { kind: "pack"; pack: ContextPack }
-  | { kind: "instructions"; inline: string[]; onDemand: number; activeSkills: string[] }
-  | { kind: "proposal"; key: string; path: string; why: string; by: string; adds: number; removes: number; hunks: HunkView[]; verdict: Record<string, "pending" | "accepted" | "rejected">; applied?: { checkpointId: string; newErrors: string[] } }
-  | { kind: "command"; id: string; command: string; state: "asking" | "running" | "done" | "denied"; output?: string; exit?: number | null }
+  | { kind: "pack"; pack: ContextPack; turnId?: string }                                    // turnId: one context card per request, in its place in the transcript
+  | { kind: "instructions"; inline: string[]; onDemand: number; activeSkills: string[]; turnId?: string }
+  | { kind: "proposal"; key: string; path: string; why: string; by: string; adds: number; removes: number; hunks: HunkView[]; verdict: Record<string, "pending" | "accepted" | "rejected">; applied?: { checkpointId: string; newErrors: string[]; undone?: boolean }; dropped?: boolean }   // dropped: the turn ended before every hunk was decided
+  | { kind: "command"; id: string; command: string; state: "asking" | "running" | "done" | "denied"; output?: string; exit?: number | null; seconds?: number | null; note?: string }   // note: "timed out (wall_clock)", "killed", a refusal
   | { kind: "board"; entries: BoardEntry[] }
   | { kind: "marker"; id: string; text: string }                                                // "context compacted", "switched to …"
-  | { kind: "model"; note: Note }                                                               // from runWithFallback (rule 70)
+  | { kind: "model"; note: Note; turnId?: string }                                              // from runWithFallback (rule 70)
   | { kind: "latency"; line: string }
   | { kind: "status"; state: "running" | "paused" | "stopping" | "done" | "cancelled" | "error"; message?: string; sessionUrl?: string };
 
+/** Webview → host. `mode` is a UiMode ("code" | "ask" | "plan" | "bypass", protocol.ts). */
 export type UiCommand =
-  | { type: "ready" } | { type: "send"; text: string } | { type: "stop" } | { type: "focus" }
+  | { type: "ready" } | { type: "send"; text: string; attach?: { path: string; start: number; end: number } } | { type: "stop" } | { type: "focus" }
   | { type: "decide"; key: string; hunkId: string; verdict: "accepted" | "rejected" } | { type: "decideAll"; key: string; verdict: "accepted" | "rejected" }
-  | { type: "openDiff"; key: string } | { type: "command"; id: string; verdict: "allow" | "deny" }
+  | { type: "openDiff"; key: string } | { type: "openFile"; path: string; line?: number } | { type: "command"; id: string; verdict: "allow" | "deny" }
   | { type: "undo"; checkpointId: string } | { type: "revertTurn"; turnId: string }
-  | { type: "openSession" } | { type: "pickModel" } | { type: "setMode"; mode: Mode } | { type: "complete"; kind: "@" | "/"; prefix: string };
+  | { type: "openSession" } | { type: "pickModel" } | { type: "setMode"; mode: "code" | "ask" | "plan" | "bypass" } | { type: "complete"; kind: "@" | "/"; prefix: string }
+  | { type: "setModel"; name: string | null } | { type: "models" }                                   // null = automatic (the configured or discovered order)
+  | { type: "newSession" } | { type: "switchSession"; id: string } | { type: "deleteSession"; id: string }
+  | { type: "setLayout"; layout: "agent" | "editor" };

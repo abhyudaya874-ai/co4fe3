@@ -1,15 +1,13 @@
 import * as vscode from "vscode";
-import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet } from "@co4fe3/agent-core";
-import type { PanelEvent, UiCommand } from "@co4fe3/agent-core/panel";
-import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, toolNameOf, Marks, type TurnOutcome } from "@co4fe3/agent-core";
-import type { Bridge } from "./bridge.js";
-import type { Board } from "@co4fe3/agent-core";
+import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet, EditorHost, Board } from "@co4fe3/agent-core";
+import type { Hub, UiMode } from "@co4fe3/agent-core/panel";
+import { runtimeOf } from "@co4fe3/agent-core/panel";
+import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, findToolCall, parseCommandResult, safeJson, sha256Hex, jail, TurnPolicy, toolNameOf, Marks, type TurnOutcome } from "@co4fe3/agent-core";
 import type { Crew } from "./crew.js";
-import type { PauseDeps, PauseMaker } from "./pause.js";
+import type { PauseMaker } from "./pause.js";
 import type { Router } from "../forge/router.js";
-import type { SessionPool } from "../forge/sessions.js";
+import type { SessionPool, SpecFor } from "../forge/sessions.js";
 import type { ReviewController } from "../review/controller.js";
-import type { EditorHost } from "@co4fe3/agent-core";
 import type { Config } from "../config.js";
 
 export interface AgentTurnDeps {
@@ -19,7 +17,10 @@ export interface AgentTurnDeps {
   board: Board;
   sessions: SessionPool;
   router: Router;
-  bridge: Bridge;
+  hub: Hub;
+  specFor: SpecFor;
+  /** The composer's mode now (Code / Ask / Plan / Bypass). */
+  uiMode(): UiMode;
   cfg(): Config;
   serverName: string;
   instructions(): Promise<InstructionSet>;
@@ -30,9 +31,12 @@ export interface AgentTurnDeps {
   recent(): string[];
   out: vscode.LogOutputChannel;
   status: { setTtft(ms: number, model: string): void };
+  /** A model answered: the menu's "Recently used". */
+  answered(model: string): void;
 }
 
-const LEAD = "";
+const MAX_ATTACH_LINES = 200;
+const STOP_GRACE_MS = 8000;                                           // how long Stop waits for the turn to unwind before it frees the UI
 
 /** One agent turn: pack → instructions → session → stream → pauses → done. Send is Stop while running. */
 export class AgentTurns {
@@ -42,70 +46,116 @@ export class AgentTurns {
 
   get busy(): boolean { return this.running !== null; }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, attach?: { path: string; start: number; end: number }): Promise<void> {
     if (this.running) return;                                     // Send is Stop while running (rule 20, trap 3)
     const ac = new AbortController(); this.running = ac;
     const turnKey = `t${Date.now().toString(36)}`;
     this.d.turn.current = { id: turnKey, signal: ac.signal, policy: new TurnPolicy(turnKey) };
-    const bridge = this.d.bridge;
+    const hub = this.d.hub;
     const marks = new Marks(); marks.mark("enter");
-    bridge.push({ kind: "user", turnId: turnKey, text });
+    hub.push({ kind: "user", turnId: turnKey, text, ...(attach ? { attach } : {}) });
+    hub.push({ kind: "status", state: "running" });               // the UI answers at once; the session and the pack take a moment
     try {
-      const mode = this.d.cfg().mode;                                   // agent | ask | plan, from the header chip (rule 50 §1)
+      const { mode, autoApproveCommands } = runtimeOf(this.d.uiMode());   // Code | Ask | Plan | Bypass (rule 50 §1)
       this.d.crew.reset(mode);                                          // members and the watchdog belong to one request
-      const toolNames = new Map<string, string>();                      // toolCallId → bare name, for board_write pushes
-      const pack = await this.d.packFor(text, this.activePath(), this.recentPaths());   // rule 40: ≤ 800 ms full, else quick, else none
-      bridge.push({ kind: "pack", pack });
+      const active = attach?.path ?? this.activePath();
+      const pack = await this.d.packFor(text, active, this.recentPaths());   // rule 40: ≤ 800 ms full, else quick, else none
+      hub.push({ kind: "pack", pack, turnId: turnKey });
       const set = await this.d.instructions();
       const files = pack.items.map((i) => i.path);
       const sel = selectInline(set, files);
       const skills = set.items.filter((i) => i.kind === "skill");
-      const active = activeSkills(set, text, files);
-      bridge.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length, activeSkills: active.map((s) => s.name) });
-      const session = await this.d.sessions.agent(renderInstructions(LEAD, sel, skills), mode, this.d.router.order("agent")[0] ?? "");   // inline-spec session; buildSpec sets enableTools for the mode
+      const activeSk = activeSkills(set, text, files);
+      hub.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length, activeSkills: activeSk.map((s) => s.name), turnId: turnKey });
+      // The lead's own instructions (the crew protocol, tool use) stay; the project's rules are appended behind them.
+      const project = renderInstructions("", sel, skills).trim();
+      const model = this.d.router.order("agent")[0] ?? "";
+      const forge = await this.d.sessions.chat(hub.forge, { project, instr: sha256Hex(project).slice(0, 12), mode, model });
+      hub.forge = forge;                                                // the next message continues this TrueForge session
+      const url = sessionUrl(this.d.cfg().trueforge.url, forge.sessionId);
+      hub.setChrome({ sessionUrl: url });
       marks.mark("session");
-      bridge.push({ kind: "status", state: "running", sessionUrl: sessionUrl(this.d.cfg().trueforge.url, session.id) });
-      const message = `${renderActiveSkills(active)}${renderPack(pack)}\n\n${expandWorkflow(set, text).text}`;   // volatile parts after the stable prefix
-      const out: TurnOutcome = await this.d.router.agent(session, message, {
+      const chat = { id: forge.sessionId, model: forge.model };
+      const selection = attach ? await this.selectionBlock(attach) : "";
+      const message = `${renderActiveSkills(activeSk)}${renderPack(pack)}\n\n${selection}${expandWorkflow(set, text).text}`;   // volatile parts after the stable prefix
+      const out: TurnOutcome = await this.d.router.agent(chat, message, {
+        specFor: (m) => this.d.specFor(mode, m, project),               // a fallback switches the model only: same mode, same project rules
         onEvent: (e, index) => {
           if (e.type === "turn.created") marks.mark("created");
           if (e.type === "model.message" || e.type === "model.message.delta") marks.mark("firstDelta");
           for (const pe of fromForge(e, index, { mode, serverName: this.d.serverName })) {
             if (pe.kind === "tool") marks.mark("firstTool");
-            bridge.push(pe);
+            hub.push(pe);
           }
           const stop = this.d.crew.onEvent(e);
-          if (e.type === "model.message") for (const c of e.toolCalls ?? []) { const n = toolNameOf(c, this.d.serverName); if (n) toolNames.set(c.id, n); }
-          if (e.type === "tool.response" && toolNames.get(e.toolCallId) === "board_write")
-            bridge.push({ kind: "board", entries: this.d.board.read() });   // the board card updates live (rule 50 §5)
-          if (stop) { bridge.push({ kind: "marker", id: `watch-${e.id}`, text: `Stopped: ${stop}` }); ac.abort(); }   // the crew watchdog (rule 50 §6)
+          if (e.type === "tool.response") {                                 // the call lives in the merged index (streamed calls arrive as deltas)
+            const call = findToolCall(index, e.toolCallId);
+            const tool = toolNameOf(call, this.d.serverName);
+            if (tool === "board_write") hub.push({ kind: "board", entries: this.d.board.read() });   // the board card updates live (rule 50 §5)
+            if (tool === "run_command") {                                   // the command card ends with its output, exit code and duration
+              const args = safeJson(call?.function?.arguments) as { command?: string } | undefined;
+              const r = parseCommandResult(e.content);
+              const note = r.timedOut ? `timed out (${r.timedOut})` : r.killed ? "killed" : undefined;
+              hub.push({ kind: "command", id: `cmd-${e.toolCallId}`, command: args?.command ?? "", state: "done", output: r.output, exit: r.exit, seconds: r.seconds, ...(note ? { note } : {}) });
+            }
+          }
+          if (stop) { hub.push({ kind: "marker", id: `watch-${e.id}`, text: `Stopped: ${stop}` }); ac.abort(); }   // the crew watchdog (rule 50 §6)
         },
-        onPause: async (pending, index, sig) => { marks.mark("review"); return await this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand })(pending, index, sig); },
-        onNote: (n) => bridge.push({ kind: "model", note: n }),            // attempt/failed/answered rows (rule 70)
+        onPause: async (pending, index, sig) => { marks.mark("review"); return await this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: autoApproveCommands || this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand })(pending, index, sig); },
+        onNote: (n) => hub.push({ kind: "model", note: n, turnId: turnKey }),            // attempt/failed/answered rows (rule 70)
       }, ac.signal);
+      hub.forge = { ...forge, model: chat.model };                      // a fallback may have changed the session's model
+      if (out.status === "done") this.d.answered(this.d.router.lastModel());
       this.d.review.closeTurn(turnKey);                               // drops undecided proposals (rule 30)
       marks.mark("done");
       const line = marks.line(this.d.router.lastModel());
       this.d.out.info(line);
       this.d.status.setTtft(marks.span("enter", "firstDelta") ?? 0, this.d.router.lastModel());
-      bridge.push({ kind: "latency", line });
-      bridge.push({ kind: "status", state: out.status === "done" ? "done" : out.status, message: out.status === "error" ? out.message : undefined });
-      bridge.flush();
+      if (this.running !== ac) return;                                // released by Stop's watchdog: a newer turn owns the status now
+      hub.push({ kind: "latency", line });
+      hub.push({ kind: "status", state: out.status === "done" ? "done" : out.status, message: out.status === "error" ? out.message : undefined });
+      hub.flush();
     } catch (e) {
-      bridge.push({ kind: "status", state: "error", message: e instanceof Error ? e.message : String(e) });
-      bridge.flush();
+      this.d.review.closeTurn(turnKey);
+      if (this.running !== ac) return;
+      hub.push({ kind: "status", state: "error", message: e instanceof Error ? e.message : String(e) });
+      hub.flush();
     } finally {
-      this.d.turn.current = this.d.turn.idle;
-      this.running = null;
+      if (this.running === ac) {                                     // a turn that Stop already released must not clear the next one's state
+        this.d.turn.current = this.d.turn.idle;
+        this.running = null;
+      }
     }
   }
 
-  /** V3Code's abortRunning order (rule 30): UI first, then members cancelled, then the network. */
+  /**
+   * V3Code's abortRunning order (rule 30): UI first, then members cancelled, then the network.
+   * The turn stays "running" until it has unwound, so a message sent right after Stop waits for it instead of racing it.
+   * If it does not unwind in time (a hung request), the UI is released anyway.
+   */
   stop(): void {
-    this.d.bridge.push({ kind: "status", state: "stopping" }); this.d.bridge.flush();
-    for (const pe of this.d.crew.cancelAll()) this.d.bridge.push(pe);   // every non-terminal member → "cancelled", before anything else
-    this.running?.abort();                                           // rejects pending reviews; runTurn calls sessions.cancel
-    this.running = null;
+    const ac = this.running;
+    if (!ac || ac.signal.aborted) return;
+    this.d.hub.push({ kind: "status", state: "stopping" }); this.d.hub.flush();
+    for (const pe of this.d.crew.cancelAll()) this.d.hub.push(pe);   // every non-terminal member → "cancelled", before anything else
+    ac.abort();                                                      // rejects pending reviews; runTurn calls sessions.cancel
+    const t = setTimeout(() => {
+      if (this.running !== ac) return;
+      this.running = null;
+      this.d.hub.push({ kind: "status", state: "cancelled", message: "stopped" });
+      this.d.hub.flush();
+    }, STOP_GRACE_MS);
+    t.unref?.();
+  }
+
+  /** The selected lines, as the model sees them. Read through the host, so an open unsaved buffer counts. */
+  private async selectionBlock(a: { path: string; start: number; end: number }): Promise<string> {
+    let rel: string;
+    try { rel = jail(this.d.host.root, a.path); } catch { return ""; }   // a path from the webview is jailed like any other
+    const text = await this.d.host.readText(rel);
+    if (text === null) return "";
+    const lines = text.split("\n").slice(Math.max(0, a.start - 1), a.end).slice(0, MAX_ATTACH_LINES);
+    return `The user selected lines ${a.start}-${a.end} of ${rel}:\n\`\`\`\n${lines.join("\n")}\n\`\`\`\n\n`;
   }
 
   private activePath(): string | undefined {
@@ -120,4 +170,3 @@ export class AgentTurns {
     return [...vscode.window.visibleTextEditors.map((e) => vscode.workspace.asRelativePath(e.document.uri, false)), ...this.d.recent()];
   }
 }
-

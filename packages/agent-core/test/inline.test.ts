@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractFence, streamingPreview, assembleInline, buildInlinePrompt, canAdvance, PhaseBox, type InlinePhase } from "../src/review/inline.js";
+import { extractFence, streamingPreview, assembleInline, buildInlinePrompt, canAdvance, PhaseBox, type InlinePhase, selectedLines } from "../src/review/inline.js";
 import type { Problem } from "../src/host.js";
 
 describe("extractFence", () => {
@@ -76,5 +76,22 @@ describe("canAdvance / PhaseBox", () => {
     box.to("applied");
     expect(box.phase).toBe("applied");
     expect(seen).toEqual(["drafting", "applied"]);
+  });
+});
+
+describe("selectedLines", () => {
+  const pos = (line: number, character: number) => ({ line, character });
+  it("a selection that ends at column 0 of a later line stops on the line before (Shift+Down, triple click)", () => {
+    expect(selectedLines({ start: pos(27, 0), end: pos(33, 0) })).toEqual({ start: 27, end: 32 });
+  });
+  it("a selection that ends inside a line includes it", () => {
+    expect(selectedLines({ start: pos(27, 4), end: pos(33, 9) })).toEqual({ start: 27, end: 33 });
+  });
+  it("a selection inside one line stays on that line, even when it ends at column 0 of the same line", () => {
+    expect(selectedLines({ start: pos(5, 2), end: pos(5, 8) })).toEqual({ start: 5, end: 5 });
+    expect(selectedLines({ start: pos(5, 0), end: pos(5, 0) })).toEqual({ start: 5, end: 5 });
+  });
+  it("two lines ending at column 0 of the third are two lines", () => {
+    expect(selectedLines({ start: pos(1, 0), end: pos(3, 0) })).toEqual({ start: 1, end: 2 });
   });
 });

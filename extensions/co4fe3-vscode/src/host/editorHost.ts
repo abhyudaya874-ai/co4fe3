@@ -61,7 +61,7 @@ export function createEditorHost(ctx: vscode.ExtensionContext, out: vscode.LogOu
       if (!f) return [];
       return await rgSearch(f.uri.fsPath, q, signal);
     },
-    run: async (req, signal) => await runCapped(req.command, root(), req.timeoutMs, req.maxOutputBytes, signal),
+    run: async (req, signal) => await runCapped(req.command, root(), req.timeoutMs, req.maxOutputBytes, signal, req.onOutput),
     problems: async (rel, o) => {
       const uri = uriOf(rel);
       if (!uri) return [];

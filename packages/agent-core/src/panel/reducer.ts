@@ -6,6 +6,8 @@ export type Row = { k: PanelEvent["kind"]; id: string; e: PanelEvent };
 
 export const emptyPanel = (): PanelState => ({ order: [], byId: {}, status: null, board: [] });
 
+export const proposalRowId = (key: string): string => `proposal:${key}`;
+
 export function rowId(e: PanelEvent): string {
   switch (e.kind) {
     case "user": return `user:${e.turnId}`;
@@ -13,13 +15,13 @@ export function rowId(e: PanelEvent): string {
     case "tool": return `tool:${e.id}`;
     case "member": return `member:${e.threadId}`;
     case "message": return `message:${e.id}`;
-    case "pack": return "pack";
-    case "instructions": return "instructions";
-    case "proposal": return `proposal:${e.key}`;
+    case "pack": return `pack:${e.turnId ?? ""}`;
+    case "instructions": return `instructions:${e.turnId ?? ""}`;
+    case "proposal": return proposalRowId(e.key);
     case "command": return `command:${e.id}`;
     case "board": return "board";
     case "marker": return `marker:${e.id}`;
-    case "model": return `model:${JSON.stringify(e.note)}`;
+    case "model": return `model:${e.turnId ?? ""}:${JSON.stringify(e.note)}`;
     case "latency": return `latency:${e.line}`;
     case "status": return "status";
   }
@@ -31,9 +33,19 @@ export function applyPanelEvent(s: PanelState, e: PanelEvent): PanelState {
   if (e.kind === "board") return { ...s, board: e.entries };
   const id = rowId(e);                                     // e.g. "tool:<id>", "proposal:<key>", "member:<threadId>"
   const prev = s.byId[id];
-  const merged = prev && e.kind === "member" ? ({ ...prev.e, ...e } as PanelEvent) : e;   // member rows merge (keep role/title); all else replaces
+  const merged = prev && e.kind === "member" ? ({ ...prev.e, ...e } as PanelEvent)                // member rows merge (keep role/title)
+    : prev?.e.kind === "command" && e.kind === "command" ? ({ ...e, command: e.command || prev.e.command } as PanelEvent)   // a command card keeps its text when a later update lacks it
+    : e;                                                                                         // all else replaces
   const row: Row = { k: e.kind, id, e: merged };
-  return prev ? { ...s, byId: { ...s.byId, [id]: row } } : { ...s, order: [...s.order, row], byId: { ...s.byId, [id]: row } };
+  if (!prev) return { ...s, order: [...s.order, row], byId: { ...s.byId, [id]: row } };
+  const at = s.order.findIndex((r) => r.id === id);                     // the webview renders from order: replace the row there too
+  const order = at >= 0 ? [...s.order.slice(0, at), row, ...s.order.slice(at + 1)] : [...s.order, row];
+  return { ...s, order, byId: { ...s.byId, [id]: row } };
+}
+
+/** The events that rebuild `s` from nothing: rows in order, then the status and the board. Replaying them is the snapshot. */
+export function panelEvents(s: PanelState): PanelEvent[] {
+  return [...s.order.map((r) => r.e), ...(s.status ? [s.status] : []), ...(s.board.length ? [{ kind: "board" as const, entries: s.board }] : [])];
 }
 
 /** One reducer pass for a whole bridge batch (rule 60 lever 10): the webview dispatches the batch once. */

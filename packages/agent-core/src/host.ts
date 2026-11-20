@@ -18,7 +18,7 @@ export interface EditorHost {
 }
 export interface SearchQuery { pattern: string; regex?: boolean; glob?: string; maxHits?: number }
 export interface SearchHit { path: string; line: number; text: string }
-export interface CommandRequest { command: string; timeoutMs: number; inactivityMs: number; maxOutputBytes: number }
+export interface CommandRequest { command: string; timeoutMs: number; inactivityMs: number; maxOutputBytes: number; /** Called with all the output so far, as it arrives (the chat shows a command's output while it runs). */ onOutput?(textSoFar: string): void }
 export interface CommandResult { exitCode: number | null; output: string; truncated: boolean; timedOut: "wall_clock" | "inactivity" | null; killed: boolean; ms: number }
 export interface Problem { code: string; severity: "error" | "warning" | "info" | "hint"; message: string; line: number }
 

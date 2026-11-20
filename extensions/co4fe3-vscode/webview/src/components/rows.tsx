@@ -1,125 +1,224 @@
-import { createElement as h, memo, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { PanelEvent } from "@co4fe3/agent-core/panel";
+import { renderPack, selectionLabel } from "@co4fe3/agent-core/panel";
 import { md } from "../md.js";
-import { renderPack } from "@co4fe3/agent-core/panel";
+import { useActions } from "../actions.js";
+import { toolLabel, hasOwnCard } from "../format.js";
+import { Icon, Spinner } from "./Icon.js";
 
-export const UserBubble = memo(function UserBubble({ e }: { e: Extract<PanelEvent, { kind: "user" }> }) {
-  return h("div", { className: "row user" }, h("div", { className: "bubble user-bubble" }, e.text));
+type Of<K extends PanelEvent["kind"]> = Extract<PanelEvent, { kind: K }>;
+
+const shorten = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, max)}…(+${s.length - max} chars)`);
+const pretty = (json: string): string => { try { return JSON.stringify(JSON.parse(json), null, 2); } catch { return json; } };
+
+export const UserBubble = memo(function UserBubble({ e }: { e: Of<"user"> }) {
+  const { openFile } = useActions();
+  return (
+    <div className="row user">
+      <div className="bubble">
+        {e.attach && (
+          <button type="button" className="attach-chip" title={`Open ${e.attach.path}`} onClick={() => openFile(e.attach!.path, e.attach!.start)}>
+            <Icon name="file" size={12} />{selectionLabel(e.attach)}
+          </button>
+        )}
+        <div className="bubble-text">{e.text}</div>
+      </div>
+    </div>
+  );
 });
 
-export const TextRow = memo(function TextRow({ e, streaming }: { e: Extract<PanelEvent, { kind: "text" }>; streaming?: boolean }) {
-  return streaming ? h("pre", { className: "row text stream" }, e.text || "…") : h("div", { className: "row text" }, md(e.text || "…"));   // no re-parse per frame while streaming
+/** The model's text, with its reasoning folded above it as "Thoughts". `live`: this is the row still being written. */
+export const AssistantText = memo(function AssistantText({ e, live }: { e: Of<"text">; live: boolean }) {
+  const { openFile } = useActions();
+  const [open, setOpen] = useState(false);
+  const hasText = e.text.trim().length > 0;
+  if (!hasText && !e.reasoning) return null;
+  return (
+    <div className="row assistant">
+      {e.reasoning && (
+        <div className="thoughts">
+          <button type="button" className="thoughts-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+            <Icon name="brain" size={13} />
+            <span>{live && !hasText ? "Thinking" : "Thoughts"}</span>
+            {live && !hasText && <Spinner size={11} />}
+            <Icon name={open ? "chevronDown" : "chevronRight"} size={12} />
+          </button>
+          {open && <div className="thoughts-body">{e.reasoning}</div>}
+        </div>
+      )}
+      {hasText && <div className="md">{md(e.text, { onFile: openFile })}</div>}
+    </div>
+  );
 });
 
-export const Thoughts = memo(function Thoughts({ e }: { e: Extract<PanelEvent, { kind: "text" }> }) {
-  if (!e.reasoning) return null;
-  return h("details", { className: "row thoughts" }, h("summary", null, "thinking"), h("div", { className: "muted" }, e.reasoning));
+export const ToolRow = memo(function ToolRow({ e }: { e: Of<"tool"> }) {
+  const { openFile } = useActions();
+  const [open, setOpen] = useState(false);
+  if (hasOwnCard(e.name)) return null;                                  // the command card shows this call
+  const { verb, target, icon } = toolLabel(e.name, e.args);
+  const isFile = (icon === "file" || icon === "edit") && !!target;
+  const filePath = target.replace(/:\d+(-\d+)?$/, "");
+  return (
+    <div className={`tool ${e.state}`}>
+      <button type="button" className="tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className="tool-ic"><Icon name={icon} size={13} /></span>
+        <span className="tool-verb">{verb}</span>
+        {target && (isFile
+          ? <span className="tool-target link" role="link" tabIndex={0} title={`Open ${filePath}`}
+              onClick={(ev) => { ev.stopPropagation(); openFile(filePath, Number(/:(\d+)/.exec(target)?.[1]) || undefined); }}
+              onKeyDown={(ev) => { if (ev.key === "Enter") { ev.stopPropagation(); openFile(filePath); } }}>{target}</span>
+          : <span className="tool-target">{target}</span>)}
+        <span className="tool-state">{e.state === "running" ? <Spinner size={12} /> : e.state === "ok" ? <Icon name="check" size={12} /> : <Icon name="alert" size={12} />}</span>
+      </button>
+      {open && (
+        <div className="tool-detail">
+          {e.args && <pre className="detail-pre">{shorten(pretty(e.args), 1500)}</pre>}
+          {e.result !== undefined && <pre className="detail-pre result">{shorten(e.result, 4000)}</pre>}
+        </div>
+      )}
+    </div>
+  );
 });
 
-export const ToolCard = memo(function ToolCard({ e }: { e: Extract<PanelEvent, { kind: "tool" }> }) {
-  return h("div", { className: `card tool ${e.state}` },
-    h("div", { className: "card-head" }, h("span", { className: "codicon codicon-tools" }), " ", e.name, " ", h("span", { className: "muted" }, e.ms != null ? `${e.ms} ms` : e.state)),
-    h("pre", { className: "args" }, shorten(e.args, 300)),
-    e.result !== undefined && h("details", null, h("summary", null, "result"), h("pre", null, shorten(e.result, 4000))));
+const MEMBER_LABEL: Record<Of<"member">["status"], string> = {
+  running: "working", "waiting-approval": "waiting for your review", completed: "done", blocked: "blocked", failed: "failed", cancelled: "cancelled",
+};
+export const MemberRow = memo(function MemberRow({ e }: { e: Of<"member"> }) {
+  return (
+    <div className={`member ${e.status}`}>
+      <span className="member-ic"><Icon name="users" size={13} /></span>
+      <strong className="member-title">{e.title}</strong>
+      <span className="chip">{e.profile ?? "member"}</span>
+      <span className="member-status">{e.status === "running" ? <Spinner size={11} /> : <span className={`dot ${e.status}`} />}{MEMBER_LABEL[e.status]}</span>
+      {e.reason && <div className="member-reason">{e.reason}</div>}
+    </div>
+  );
 });
 
-export const MemberRow = memo(function MemberRow({ e }: { e: Extract<PanelEvent, { kind: "member" }> }) {
-  return h("div", { className: `row member ${e.status}` },
-    h("span", { className: "chip" }, e.profile ?? "member"), " ",
-    h("strong", null, e.title), " ",
-    h("span", { className: "muted" }, e.status),
-    e.reason && h("div", { className: "muted" }, e.reason));
+/** A brief the lead sent to a member, or the member's report back. Folded, because the lead's answer carries what matters. */
+export const MessageBubble = memo(function MessageBubble({ e }: { e: Of<"message"> }) {
+  const { openFile } = useActions();
+  const brief = e.from === "main";
+  const lines = e.text.split("\n").length;
+  return (
+    <details className={`msg ${brief ? "brief" : "report"}`}>
+      <summary><Icon name={brief ? "arrowUp" : "arrowDown"} size={12} />{brief ? `Brief for ${e.to}` : `Report from ${e.from}`}<span className="muted"> · {lines} line{lines === 1 ? "" : "s"}</span></summary>
+      <div className="md">{md(e.text, { onFile: openFile })}</div>
+    </details>
+  );
 });
 
-export const MessageBubble = memo(function MessageBubble({ e }: { e: Extract<PanelEvent, { kind: "message" }> }) {
-  const who = e.from === "main" ? `lead → ${e.to}` : `${e.from} → lead`;
-  const lines = e.text.split("\n");
-  return h("div", { className: `row message ${e.from === "main" ? "brief" : "report"}` },
-    lines.length > 3
-      ? h("details", { className: "msg-collapse" }, h("summary", null, who, " · ", h("span", { className: "muted" }, `${lines.length} lines`)), md(e.text))
-      : h("div", null, h("div", { className: "muted" }, who), md(e.text)));
-});
-
-export const PackCard = memo(function PackCard({ e }: { e: Extract<PanelEvent, { kind: "pack" }> }) {
+export const PackCard = memo(function PackCard({ e }: { e: Of<"pack"> }) {
   const p = e.pack;
   const [sent, setSent] = useState(false);
-  if (!p.items.length) return h("div", { className: "card pack muted" }, "Context · skipped (index still building)");
-  const tag = p.path === "quick" ? " · quick pack" : p.path === "none" ? " · no pack" : "";
-  const ranksOf = (why: string[]): string => (why.at(-1)?.includes("#") ? why.at(-1)! : "");
-  const reasonsOf = (why: string[]): string[] => (why.at(-1)?.includes("#") ? why.slice(0, -1) : why);
-  return h("div", { className: "card pack" },
-    h("div", { className: "card-head" },
-      `Context · ${p.items.length} file${p.items.length === 1 ? "" : "s"} · ${p.used.toLocaleString()} / ${p.budget.toLocaleString()} tok`,
-      tag && h("span", { className: "chip warn" }, tag),
-      " ", h("button", { className: "link", onClick: () => setSent(!sent) }, sent ? "Hide" : "View as sent")),
-    h("div", { className: "pack-bar" }, h("div", { className: "pack-fill", style: `width:${Math.min(100, (p.used / Math.max(1, p.budget)) * 100)}%` })),
-    sent
-      ? h("pre", { className: "pack-sent" }, renderPack(p))
-      : p.items.map((i) => h("div", { key: i.path, className: `pack-row${i.pinned ? " pinned" : ""}` },
-          h("span", { className: "pack-path" }, i.path), " ",
-          h("span", { className: "muted" }, `${i.tokens} tok`),
-          reasonsOf(i.why).map((r, k) => h("span", { key: k, className: "muted" }, ` · ${r}`)),
-          ranksOf(i.why) && h("span", { className: "ranks" }, ranksOf(i.why).split(" · ").map((r, k) => h("span", { key: k, className: "rank-chip" }, r))))),
-    !sent && p.skipped.length > 0 && h("div", { className: "muted" }, `+${p.skipped.length} more ranked files were left out (over budget)`));
+  if (!p.items.length) return <div className="ctx-line muted"><Icon name="layers" size={12} />Context skipped (the index is still building)</div>;
+  const pct = Math.min(100, (p.used / Math.max(1, p.budget)) * 100);
+  const reasons = (why: string[]): string[] => (why.at(-1)?.includes("#") ? why.slice(0, -1) : why);
+  return (
+    <details className="ctx">
+      <summary>
+        <Icon name="layers" size={12} />
+        <span>Context · {p.items.length} file{p.items.length === 1 ? "" : "s"} · {p.used.toLocaleString()} / {p.budget.toLocaleString()} tokens</span>
+        {p.path !== "full" && <span className="chip warn">{p.path === "quick" ? "quick pack" : "no pack"}</span>}
+      </summary>
+      <div className="ctx-bar"><div className="ctx-fill" style={{ width: `${pct}%` }} /></div>
+      <button type="button" className="link-btn" onClick={() => setSent(!sent)}>{sent ? "Hide the text sent" : "View as sent"}</button>
+      {sent
+        ? <pre className="detail-pre">{renderPack(p)}</pre>
+        : p.items.map((i) => (
+            <div key={i.path} className={`ctx-row${i.pinned ? " pinned" : ""}`}>
+              <span className="ctx-path">{i.path}</span>
+              <span className="muted">{i.tokens} tok{reasons(i.why).length ? ` · ${reasons(i.why).join(" · ")}` : ""}</span>
+            </div>
+          ))}
+      {!sent && p.skipped.length > 0 && <div className="muted">+{p.skipped.length} more ranked files were left out (over budget)</div>}
+    </details>
+  );
 });
 
-export const BoardCard = memo(function BoardCard({ entries }: { entries: { key: string; value: string; by: string; at: number }[] }) {
+export const BoardCard = memo(function BoardCard({ entries }: { entries: Of<"board">["entries"] }) {
   if (!entries.length) return null;
-  return h("div", { className: "card board" },
-    h("div", { className: "card-head" }, "Crew board"),
-    entries.map((e) => h("div", { key: e.key }, h("span", { className: "pack-path" }, e.key), ` (${e.by}): ${e.value}`)));
+  return (
+    <details className="ctx board">
+      <summary><Icon name="users" size={12} /><span>Crew board · {entries.length} note{entries.length === 1 ? "" : "s"}</span></summary>
+      {entries.map((b) => <div key={b.key} className="ctx-row"><span className="ctx-path">{b.key}</span><span className="muted">{b.by}: {b.value}</span></div>)}
+    </details>
+  );
 });
 
-export const DiffCard = memo(function DiffCard({ e, onDecide, onOpen }: {
-  e: Extract<PanelEvent, { kind: "proposal" }>;
-  onDecide(key: string, hunkId: string, v: "accepted" | "rejected"): void;
-  onOpen(key: string): void;
-}) {
-  const pending = e.hunks.filter((x) => e.verdict[x.id] === "pending").length;
-  return h("div", { className: "card proposal" },
-    h("div", { className: "card-head" },
-      h("span", { className: "codicon codicon-diff" }), " ",
-      h("button", { className: "link", onClick: () => onOpen(e.key) }, e.path),
-      ` +${e.adds} −${e.removes} · ${e.by}`),
-    h("div", { className: "muted" }, e.why),
-    e.applied && h("div", { className: "muted" }, e.applied.newErrors.length ? `new errors: ${e.applied.newErrors.join(" · ")}` : "no new errors"),
-    h("div", { className: "hunks" }, e.hunks.map((x) => h("div", { key: x.id, className: `hunk ${e.verdict[x.id]}` },
-      h("span", { className: "muted" }, `hunk ${x.id} @${x.oldStart + 1}`), " ",
-      h("button", { className: "btn", disabled: e.verdict[x.id] !== "pending", onClick: () => onDecide(e.key, x.id, "accepted") }, "✓"),
-      " ",
-      h("button", { className: "btn", disabled: e.verdict[x.id] !== "pending", onClick: () => onDecide(e.key, x.id, "rejected") }, "✗")))),
-    pending > 0 && h("div", null,
-      h("button", { className: "btn", onClick: () => e.hunks.filter((x) => e.verdict[x.id] === "pending").forEach((x) => onDecide(e.key, x.id, "accepted")) }, "Accept all"),
-      " ",
-      h("button", { className: "btn", onClick: () => e.hunks.filter((x) => e.verdict[x.id] === "pending").forEach((x) => onDecide(e.key, x.id, "rejected")) }, "Reject all")));
+/** The first word of a command, for the card's title: "pytest -q" → "pytest", "cd x && ls" → "cd". */
+export const commandName = (command: string): string => /^\s*(?:\w+=\S*\s+)*([^\s|&;]+)/.exec(command)?.[1]?.split("/").at(-1) ?? "shell";
+
+const OUTPUT_LINES = 14;                                              // lines the output box shows before it scrolls
+
+/** A shell command as Devin shows it: the command, its output right under it, and how it ended. */
+export const CommandCard = memo(function CommandCard({ e }: { e: Of<"command"> }) {
+  const { command } = useActions();
+  const [all, setAll] = useState(false);
+  const box = useRef<HTMLPreElement>(null);
+  const running = e.state === "running";
+  const out = e.output ?? "";
+  const lines = out === "" ? 0 : out.replace(/\n$/, "").split("\n").length;
+  const failed = e.state === "done" && e.exit !== undefined && e.exit !== 0;
+  useLayoutEffect(() => { const el = box.current; if (el && running) el.scrollTop = el.scrollHeight; }, [out, running]);   // follow the tail while it runs
+  return (
+    <div className={`cmd ${e.state}${failed ? " failed" : ""}`}>
+      <div className="cmd-head">
+        <span className="tool-ic"><Icon name="terminal" size={13} /></span>
+        <span className="tool-verb">Command</span>
+        <span className="cmd-name">{commandName(e.command)}</span>
+        <span className="tool-state">{running && <Spinner size={12} />}{e.state === "denied" && <span className="chip">not run</span>}</span>
+      </div>
+      <pre className="cmd-line" title={e.command}><span className="cmd-prompt" aria-hidden="true">$ </span>{e.command}</pre>
+      {e.state === "asking" && (
+        <div className="cmd-ask">
+          <span className="muted">Run this command?</span>
+          <button type="button" className="btn" onClick={() => command(e.id, "deny")}>Deny</button>
+          <button type="button" className="btn primary" onClick={() => command(e.id, "allow")} autoFocus>Allow</button>
+        </div>
+      )}
+      {out !== "" && (
+        <>
+          <pre ref={box} className={`cmd-out${all ? " all" : ""}`} tabIndex={0} aria-label="Command output">{shorten(out, 20_000)}</pre>
+          {lines > OUTPUT_LINES && <button type="button" className="link-btn cmd-more" onClick={() => setAll(!all)}>{all ? "Show less" : `Show all ${lines} lines`}</button>}
+        </>
+      )}
+      {e.state === "denied" && e.output === undefined && <div className="cmd-end muted">Not run: you denied it.</div>}
+      {e.state === "done" && (
+        <div className={`cmd-end${failed ? " bad" : ""}`}>
+          <Icon name={failed ? "alert" : "check"} size={12} />
+          <span>{e.exit === null || e.exit === undefined ? "Finished" : `Exited with code ${e.exit}`}{e.seconds != null ? ` · ${e.seconds.toFixed(e.seconds < 10 ? 1 : 0)} s` : ""}{e.note ? ` · ${e.note}` : ""}</span>
+        </div>
+      )}
+      {running && out === "" && <div className="cmd-end muted">Running…</div>}
+    </div>
+  );
 });
 
-export const CommandCard = memo(function CommandCard({ e, onVerdict }: { e: Extract<PanelEvent, { kind: "command" }>; onVerdict(id: string, v: "allow" | "deny"): void }) {
-  return h("div", { className: `card command ${e.state}` },
-    h("div", { className: "card-head" }, h("span", { className: "codicon codicon-terminal" }), " ", e.command),
-    e.output !== undefined && h("pre", null, shorten(e.output, 2000)),
-    e.state === "asking" && h("div", null,
-      h("button", { className: "btn", onClick: () => onVerdict(e.id, "allow") }, "Allow"),
-      " ",
-      h("button", { className: "btn", onClick: () => onVerdict(e.id, "deny") }, "Deny")));
-});
-
-export const ModelBanner = memo(function ModelBanner({ e }: { e: Extract<PanelEvent, { kind: "model" }> }) {
+/** Task C on screen: which model failed, why, and who answered instead. */
+export const ModelBanner = memo(function ModelBanner({ e }: { e: Of<"model"> }) {
   const n = e.note;
-  if (n.kind === "answered" && n.fellBack) return h("div", { className: "banner" }, `Answered by ${n.model} (the primary model failed).`);
-  if (n.kind === "failed") return h("div", { className: "banner" }, `${n.model}: ${n.failure.detail}${n.next ? ` → trying ${n.next}` : ""}`);
+  if (n.kind === "answered" && n.fellBack) return <div className="banner warn" role="status"><Icon name="alert" size={14} /><span>Answered by <strong>{n.model}</strong> (the first model failed).</span></div>;
+  if (n.kind === "failed") return <div className="banner warn" role="status"><Icon name="alert" size={14} /><span><strong>{n.model}</strong>: {n.failure.detail}{n.next ? <> → trying <strong>{n.next}</strong></> : null}</span></div>;
   return null;
 });
 
-export const Marker = memo(function Marker({ e }: { e: Extract<PanelEvent, { kind: "marker" }> }) {
-  return h("div", { className: "row marker muted" }, `— ${e.text} —`);
+export const Marker = memo(function Marker({ e }: { e: Of<"marker"> }) {
+  return <div className="marker muted">{e.text}</div>;
 });
 
-export const StatusLine = memo(function StatusLine({ e, sessionUrl, onOpenSession }: { e: Extract<PanelEvent, { kind: "status" }> | null; sessionUrl?: string; onOpenSession(): void }) {
-  if (!e) return null;
-  return h("div", { className: `status ${e.state}` },
-    e.message ?? e.state,
-    sessionUrl && h("button", { className: "link", onClick: onOpenSession }, "Open session in TrueForge"));
+export const LatencyLine = memo(function LatencyLine({ e }: { e: Of<"latency"> }) {
+  return <div className="latency muted" title="Measured on this request">{e.line}</div>;
 });
 
-const shorten = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, max)}…(+${s.length - max} chars)`);
+export const InstructionsLine = memo(function InstructionsLine({ e }: { e: Of<"instructions"> }) {
+  const total = e.inline.length + e.activeSkills.length;
+  if (!total && !e.onDemand) return null;
+  return (
+    <details className="ctx instr">
+      <summary><Icon name="book" size={12} /><span>Project instructions · {e.inline.length} loaded{e.activeSkills.length ? ` · ${e.activeSkills.length} skill${e.activeSkills.length === 1 ? "" : "s"}` : ""}{e.onDemand ? ` · ${e.onDemand} on demand` : ""}</span></summary>
+      {e.inline.length > 0 && <div className="muted">Loaded: {e.inline.join(", ")}</div>}
+      {e.activeSkills.length > 0 && <div className="muted">Skills: {e.activeSkills.join(", ")}</div>}
+    </details>
+  );
+});

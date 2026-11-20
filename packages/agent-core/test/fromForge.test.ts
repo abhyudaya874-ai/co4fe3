@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { fromForge } from "../src/forge/fromForge.js";
+import { mergeEventDelta } from "@truefoundry/trueforge-sdk";
 import type { TfEvent, EventIndex } from "../src/forge/turn.js";
 
 /** Recorded event shapes from the spike (docs/progress/01-spike.md), trimmed to the fields the mapping uses. */
@@ -21,6 +22,17 @@ describe("fromForge (workflow 05 §1)", () => {
     expect(tool && tool.state).toBe("running");
   });
 
+  it("a model.message.delta emits the merged text row (regression: deltas were dropped)", () => {
+    const ix = new Map<string, TfEvent>();
+    const base = { type: "model.message", id: "m1", threadId: "main", content: "", toolCalls: [] } as unknown as TfEvent;
+    ix.set("m1", base);
+    const delta = { type: "model.message.delta", id: "m1", threadId: "main", content: "Hello!" } as unknown as TfEvent;
+    mergeEventDelta(base as never, delta as never);
+    const out = fromForge(delta, ix, { mode: "agent" });
+    const row = out.find((o) => o.kind === "text");
+    expect(row && row.kind === "text" && row.text).toBe("Hello!");
+  });
+
   it("a tool.response becomes an ok tool card with the result", () => {
     const ix = index();
     const e = { type: "tool.response", id: "r1", threadId: "main", toolCallId: "c1", content: "file text" } as unknown as TfEvent;
@@ -28,6 +40,20 @@ describe("fromForge (workflow 05 §1)", () => {
     const tool = out[0]!;
     expect(tool.kind).toBe("tool");
     if (tool.kind === "tool") { expect(tool.state).toBe("ok"); expect(tool.result).toBe("file text"); }
+  });
+
+  it("a tool.response keeps the tool's name and arguments (regression: the card said \"?\" with no arguments)", () => {
+    const ix = index();                                              // the call c1 lives inside event t1, not under its own id
+    const out = fromForge({ type: "tool.response", id: "r1", threadId: "main", toolCallId: "c1", content: "file text" } as unknown as TfEvent, ix, { mode: "agent" });
+    const tool = out[0]!;
+    if (tool.kind !== "tool") throw new Error("expected a tool row");
+    expect(tool.name).toBe("read_file");
+    expect(tool.args).toBe("{\"path\":\"a.py\"}");
+  });
+
+  it("a tool.response for an unknown call still renders, named by what we know", () => {
+    const out = fromForge({ type: "tool.response", id: "r2", threadId: "main", toolCallId: "nope", content: "x" } as unknown as TfEvent, index(), { mode: "agent" });
+    expect(out[0]).toMatchObject({ kind: "tool", id: "nope", name: "tool", state: "ok" });
   });
 
   it("thread.created becomes a member row plus the brief; thread.done merges the row and adds the report", () => {

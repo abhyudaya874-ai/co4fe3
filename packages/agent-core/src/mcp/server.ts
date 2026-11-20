@@ -4,6 +4,7 @@ import { diffLines } from "diff";
 import type { EditorHost, Applier } from "../host.js";
 import type { ReviewStore } from "../review/store.js";
 import { applyHunks } from "../review/hunks.js";
+import { formatCommandResult } from "./commandResult.js";
 import { splitLines } from "../review/lines.js";
 import { newErrors, renderProblem } from "../review/verify.js";
 import type { Checkpoint } from "../review/checkpoints.js";
@@ -26,6 +27,10 @@ export interface McpDeps {
   index(): RepoIndex | null; instructions(): Promise<InstructionSet>;
   turn(): { id: string; signal: AbortSignal; policy: TurnPolicy };   // set by the extension when a turn starts; a fresh dummy outside turns
   changes(turnId: string): Checkpoint[]; log(line: string): void;
+  /** Called after propose_edit wrote accepted hunks: the panel's diff card shows the checkpoint and the verify verdict. */
+  /** A command is about to run: returns where its output goes while it runs (the chat's command card), or undefined. */
+  onCommand?(command: string): { output(textSoFar: string): void; done(): void } | undefined;
+  onApplied?(a: { key: string; path: string; checkpointId: string; newErrors: string[]; accepted: number; total: number }): void;
 }
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: true };
 export const MAX_RESULT_CHARS = 60_000;                                 // ≈ 15k tokens; V3Code's boundMcpText ceiling
@@ -188,6 +193,7 @@ export function createEditorMcpServer(d: McpDeps): McpServer {
     const rejected = decision.rejected.length ? ` The user rejected ${decision.rejected.join(", ")}; do not re-propose those.` : "";
     // Verify against the baseline taken at review time: only errors THIS edit introduced (rule 30, V3Code turboDraftVerify).
     const fresh = newErrors(proposal.baseline, await d.host.problems(rel, { changedSince: t0, waitMs: 1500 }));
+    try { d.onApplied?.({ key: proposal.key, path: rel, checkpointId: r.checkpointId, newErrors: fresh.slice(0, 8).map(renderProblem), accepted: decision.accepted.length, total: proposal.hunks.length }); } catch { /* UI only: never fails the tool */ }
     const verdict = fresh.length ? `\nNew errors introduced by this edit (fix exactly these):\n${fresh.slice(0, 8).map((p) => `- ${renderProblem(p)}`).join("\n")}` : " No new errors.";
     return text(`Applied ${decision.accepted.length} of ${proposal.hunks.length} hunks to ${rel}.${rejected}${verdict}`);
   }));
@@ -200,11 +206,10 @@ export function createEditorMcpServer(d: McpDeps): McpServer {
   }, wrap("run_command", async ({ command, timeout_s }) => {
     const policy = commandPolicy(command);
     if (!policy.ok) throw new ToolInputError(`Refused by the command policy: ${policy.why}. Tests and builds only.`);
-    const r = await d.host.run({ command, timeoutMs: timeout_s * 1000, inactivityMs: 60_000, maxOutputBytes: 16_384 }, d.turn().signal);
-    const head = `exit ${r.exitCode ?? "none"} · ${(r.ms / 1000).toFixed(1)} s${r.timedOut ? ` · timed out (${r.timedOut})` : ""}${r.killed ? " · killed" : ""}`;
-    const out = cutMiddle(r.output, 16_384);
-    const tail = r.timedOut ? "\nThe command did not finish; do NOT assume it succeeded." : "";
-    return text(`${head}\n${out}${tail}`);
+    const live = d.onCommand?.(command);                                      // the chat's card for this command, if it has one
+    const r = await d.host.run({ command, timeoutMs: timeout_s * 1000, inactivityMs: 60_000, maxOutputBytes: 16_384, ...(live ? { onOutput: live.output } : {}) }, d.turn().signal);
+    live?.done();
+    return text(formatCommandResult(r, cutMiddle(r.output, 16_384)));
   }));
 
   return s;

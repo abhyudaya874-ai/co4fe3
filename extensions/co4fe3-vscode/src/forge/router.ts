@@ -13,7 +13,6 @@ export interface RouterDeps {
   hedgeInline: () => boolean;                             // cfg().latency.hedgeInline (rule 60 lever 9)
   take: Take;
   warm: (mode: "inline" | "agent", model: string) => void;
-  specFor: (mode: "inline" | "agent" | "ask" | "plan", model: string) => AgentSpec;
   log: (l: string) => void;
 }
 
@@ -33,6 +32,8 @@ export class Router {
     return s && s.benchedUntil > Date.now() ? s : undefined;
   }
   stat(fqn: string): ModelStat | undefined { return this.stats()[fqn]; }
+  /** Every model's stats, for the chat's model menu. */
+  statsMap(): Readonly<Record<string, ModelStat>> { return this.stats(); }
   resetStats(): void { void this.ctx.globalState.update("co4fe3.stats.v1", {}); }
 
   private record(model: string, r: AttemptResult): void {
@@ -102,13 +103,16 @@ export class Router {
     }
   }
 
-  /** One agent turn on the panel's chat session: tools enabled, pauses answered by the panel, fallback via sessions.update. */
-  async agent(session: { id: string; model: string }, text: string, hooks: TurnHooks & { onNote?(n: Note): void }, signal: AbortSignal): Promise<TurnOutcome> {
+  /**
+   * One agent turn on the panel's chat session: tools enabled, pauses answered by the panel, fallback via sessions.update.
+   * `hooks.specFor(model)` builds the spec for the session's CURRENT mode and project rules, so a fallback switches only the model.
+   */
+  async agent(session: { id: string; model: string }, text: string, hooks: TurnHooks & { onNote?(n: Note): void; specFor(model: string): AgentSpec }, signal: AbortSignal): Promise<TurnOutcome> {
     let prev: string | undefined;
     let lastOutcome: TurnOutcome | undefined;
     const r = await runWithFallback(this.order("agent"), async (model, _n, s) => {
       if (session.model !== model) {                            // same chat session, different model (rule 20 trap 7)
-        await this.getClient().sessions.update(session.id, { agent: { spec: this.deps.specFor("agent", model) as TrueForgeApi.AgentSpec } }, { timeoutInSeconds: 15, maxRetries: 0 });
+        await this.getClient().sessions.update(session.id, { agent: { spec: hooks.specFor(model) as TrueForgeApi.AgentSpec } }, { timeoutInSeconds: 15, maxRetries: 0 });
         session.model = model;
       }
       const res = await attemptTurn({
@@ -121,6 +125,7 @@ export class Router {
         prev = (res.outcome as { previousTurnId?: string | null }).previousTurnId ?? prev;   // the retry replaces the failed turn (rule 20, trap 7)
       return res;
     }, (n) => { hooks.onNote?.(n); this.deps.log(noteLine(n)); }, signal, realSleep);
+    if (r.model === null && signal.aborted) return { status: "cancelled", turnId: undefined, reason: "client-cancelled" };   // Stop before any model answered is not a failure
     if (r.model === null)
       return lastOutcome?.status === "error" ? { ...lastOutcome, message: allFailedLine(r.failures) } : { status: "error", turnId: undefined, previousTurnId: prev ?? null, message: allFailedLine(r.failures), sawOutput: false };
     this.last = r.model;

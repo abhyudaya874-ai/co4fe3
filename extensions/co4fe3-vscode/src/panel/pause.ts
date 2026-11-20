@@ -64,7 +64,7 @@ async function reviewEdit(d: PauseDeps, p: PendingCall, by: string, signal: Abor
   const baseline = await d.host.problems(rel);                   // verify-after-apply compares against this (rule 30)
   const hunks = toHunks(before ?? "", plan.after);
   const proposal: Proposal = { key: proposalKey(rel, v.data), turnId: d.turnKey, threadId: p.threadId, toolCallId: p.toolCallId, by, path: rel, why: v.data.why, before, after: plan.after, hunks, verdict: Object.fromEntries(hunks.map((h) => [h.id, "pending" as const])), baseline };
-  const decision = await d.review.review(proposal, signal);      // panel card + diff editor; resolves when every hunk is decided
+  const decision = await d.review.review(proposal, signal, { open: false });   // the chat's diff card is the review; "Open diff" opens the editor. Resolves when every hunk is decided
   d.crew.record(p.threadId, { proposals: 1, hunksAccepted: decision.accepted.length, hunksRejected: decision.rejected.length, filesChanged: decision.accepted.length ? [rel] : [] });   // evidence (rule 50 §4)
   if (!decision.accepted.length) return deny(p, `The user rejected all ${proposal.hunks.length} hunks for ${rel}. Do not propose them again unless asked.`);
   d.sideEffect();                                                // from here a fallback retry is not allowed (rule 70)

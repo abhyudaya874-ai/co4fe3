@@ -41,15 +41,18 @@ const toRel = (root: string, abs: string): string => {
 };
 
 /** Runs one shell command in `cwd`. Killed when `signal` aborts or on a wall-clock timeout. Output capped (first 2 KB + last tail). */
-export function runCapped(cmd: string, cwd: string, timeoutMs: number, maxBytes: number, signal: AbortSignal): Promise<CommandResult> {
+export function runCapped(cmd: string, cwd: string, timeoutMs: number, maxBytes: number, signal: AbortSignal, onOutput?: (textSoFar: string) => void): Promise<CommandResult> {
   return new Promise((resolve) => {
     const t0 = performance.now();
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/(_API_KEY|_TOKEN|_SECRET)$/i.test(k)));
     const child = spawn(cmd, { cwd, shell: true, env, detached: process.platform !== "win32" });
     let out = "", truncated = false, timedOut: CommandResult["timedOut"] = null, killed = false;
+    let lastEmit = 0, pending: NodeJS.Timeout | undefined;
+    const emit = () => { pending = undefined; lastEmit = Date.now(); try { onOutput?.(out); } catch { /* the UI must never break a command */ } };
     const add = (b: Buffer) => {
       out += b.toString("utf8");
       if (out.length > maxBytes) { out = out.slice(0, 2048) + `\n…(middle ${out.length - maxBytes + 100} characters omitted)…\n` + out.slice(-(maxBytes - 2100)); truncated = true; }
+      if (onOutput && !pending) pending = setTimeout(emit, Math.max(0, 120 - (Date.now() - lastEmit)));   // at most ~8 updates a second
     };
     child.stdout?.on("data", add); child.stderr?.on("data", add);
     const kill = () => {
@@ -60,6 +63,7 @@ export function runCapped(cmd: string, cwd: string, timeoutMs: number, maxBytes:
     signal.addEventListener("abort", () => { timedOut ??= "wall_clock"; kill(); }, { once: true });
     child.on("close", (code) => {
       clearTimeout(timer); signal.removeEventListener("abort", kill);
+      if (pending) { clearTimeout(pending); pending = undefined; }
       resolve({ exitCode: code, output: out, truncated, timedOut, killed, ms: Math.round(performance.now() - t0) });
     });
     child.on("error", () => { clearTimeout(timer); resolve({ exitCode: null, output: out, truncated, timedOut, killed, ms: Math.round(performance.now() - t0) }); });

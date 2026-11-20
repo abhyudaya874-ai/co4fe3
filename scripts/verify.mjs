@@ -21,6 +21,7 @@ const stages = [
   { name: "hooks", cmd: "bash scripts/hooks/test-hooks.sh" },
   { name: "typecheck", cmd: "npm run typecheck" },
   { name: "unit", cmd: "npx vitest run --project unit" },
+  { name: "webview", cmd: "npx vitest run --project webview" },   // renders every PanelEvent kind: one bad value must never blank the chat again
 ];
 if (!fast) {
   stages.push(

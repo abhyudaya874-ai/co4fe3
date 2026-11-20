@@ -73,7 +73,7 @@
       },
       {
         "command": "co4fe3.cycleMode",
-        "title": "Cycle mode (Agent / Ask / Plan)",
+        "title": "Cycle mode (Code / Ask / Plan / Bypass)",
         "category": "co4fe3"
       },
       {
@@ -100,6 +100,80 @@
         "command": "co4fe3.dev.rank",
         "title": "Dev: rank files for a prompt",
         "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.agentMode",
+        "title": "Open Agent mode",
+        "category": "co4fe3",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "co4fe3.editorMode",
+        "title": "Switch to Editor mode",
+        "category": "co4fe3",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "co4fe3.toggleLayout",
+        "title": "Toggle Agent mode / Editor mode",
+        "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.newSession",
+        "title": "New session",
+        "category": "co4fe3",
+        "icon": "$(add)"
+      },
+      {
+        "command": "co4fe3.sessionHistory",
+        "title": "Session history",
+        "category": "co4fe3",
+        "icon": "$(history)"
+      },
+      {
+        "command": "co4fe3.focusChat",
+        "title": "Focus the chat",
+        "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.inline.submit",
+        "title": "Submit ↵",
+        "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.inline.model",
+        "title": "Model",
+        "category": "co4fe3"
+      },
+      {
+        "command": "co4fe3.inline.hunkAccept",
+        "title": "Accept hunk",
+        "category": "co4fe3",
+        "icon": "$(check)"
+      },
+      {
+        "command": "co4fe3.inline.hunkReject",
+        "title": "Reject hunk",
+        "category": "co4fe3",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "co4fe3.inline.acceptAll",
+        "title": "Accept all hunks",
+        "category": "co4fe3",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "co4fe3.inline.rejectAll",
+        "title": "Reject all hunks",
+        "category": "co4fe3",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "co4fe3.inline.close",
+        "title": "Close",
+        "category": "co4fe3",
+        "icon": "$(close)"
       }
     ],
     "keybindings": [
@@ -133,7 +207,12 @@
         "command": "co4fe3.cycleMode",
         "key": "ctrl+.",
         "mac": "cmd+.",
-        "when": "focusedView == co4fe3.panel"
+        "when": "focusedView == co4fe3.dock || focusedView == co4fe3.panel || activeWebviewPanelId == co4fe3.agent"
+      },
+      {
+        "command": "co4fe3.toggleLayout",
+        "key": "ctrl+alt+j",
+        "mac": "cmd+alt+j"
       }
     ],
     "menus": {
@@ -165,6 +244,112 @@
         {
           "command": "co4fe3.dev.rank",
           "when": "co4fe3.devMode"
+        },
+        {
+          "command": "co4fe3.inline.submit",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.model",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.hunkAccept",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.hunkReject",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.acceptAll",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.rejectAll",
+          "when": "false"
+        },
+        {
+          "command": "co4fe3.inline.close",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "co4fe3.newSession",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "co4fe3.sessionHistory",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "navigation@2"
+        },
+        {
+          "command": "co4fe3.agentMode",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "navigation@3"
+        },
+        {
+          "command": "co4fe3.pickModel",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "overflow@1"
+        },
+        {
+          "command": "co4fe3.resetStats",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "overflow@2"
+        },
+        {
+          "command": "co4fe3.startTrueForge",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "overflow@3"
+        },
+        {
+          "command": "co4fe3.undoLast",
+          "when": "view == co4fe3.dock || view == co4fe3.panel",
+          "group": "overflow@4"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "co4fe3.inline.submit",
+          "group": "inline@1",
+          "when": "commentController == co4fe3-inline && commentThread != co4fe3.review"
+        },
+        {
+          "command": "co4fe3.inline.model",
+          "group": "inline@2",
+          "when": "commentController == co4fe3-inline && commentThread != co4fe3.review"
+        },
+        {
+          "command": "co4fe3.inline.acceptAll",
+          "group": "inline@1",
+          "when": "commentController == co4fe3-inline && commentThread == co4fe3.review"
+        },
+        {
+          "command": "co4fe3.inline.rejectAll",
+          "group": "inline@2",
+          "when": "commentController == co4fe3-inline && commentThread == co4fe3.review"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "co4fe3.inline.close",
+          "group": "navigation",
+          "when": "commentController == co4fe3-inline"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "co4fe3.inline.hunkAccept",
+          "group": "inline@1",
+          "when": "commentController == co4fe3-inline && comment == co4fe3.hunk"
+        },
+        {
+          "command": "co4fe3.inline.hunkReject",
+          "group": "inline@2",
+          "when": "commentController == co4fe3-inline && comment == co4fe3.hunk"
         }
       ]
     },
@@ -175,14 +360,30 @@
           "title": "co4fe3",
           "icon": "media/icon.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "co4fe3-dock",
+          "title": "co4fe3",
+          "icon": "media/icon.svg"
+        }
       ]
     },
     "views": {
+      "co4fe3-dock": [
+        {
+          "type": "webview",
+          "id": "co4fe3.dock",
+          "name": "co4fe3",
+          "when": "!co4fe3.legacyDock"
+        }
+      ],
       "co4fe3": [
         {
           "type": "webview",
           "id": "co4fe3.panel",
-          "name": "Agent"
+          "name": "Agent",
+          "when": "co4fe3.legacyDock"
         }
       ]
     },
@@ -196,16 +397,19 @@
         },
         "co4fe3.trueforge.command": {
           "type": "string",
-          "default": "npm run trueforge",
-          "description": "Command run by 'Start TrueForge in a terminal'."
+          "default": "OUTBOUND_URL_ALLOWED_HOSTS='[\"127.0.0.1\",\"localhost\"]' npx --yes @truefoundry/trueforge@0.185.1",
+          "description": "Command run by 'Start TrueForge in a terminal'. It runs from any folder."
         },
         "co4fe3.models.order": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [],
-          "markdownDescription": "Model FQNs as TrueForge lists them; the first is the primary. Empty: the first two models TrueForge lists."
+          "default": [
+            "nvidia-nim/nemotron-super",
+            "google-gemini/gemini-flash-lite"
+          ],
+          "markdownDescription": "Model FQNs as TrueForge lists them; the first is the primary. Names TrueForge does not serve are skipped. When this is left at its default, other models TrueForge serves are added as fallbacks. The model picker in the chat overrides this."
         },
         "co4fe3.mode": {
           "type": "string",
@@ -215,7 +419,7 @@
             "plan"
           ],
           "default": "agent",
-          "markdownDescription": "Agent edits (with review); Ask and Plan are read-only. Applies to the next chat session."
+          "markdownDescription": "The mode a new window starts in (Code, Ask or Plan). Change it from the chat; the chat remembers the last choice."
         },
         "co4fe3.crew.enabled": {
           "type": "boolean",
@@ -248,11 +452,22 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Run commands that pass the command policy without asking. Edits are always reviewed."
+        },
+        "co4fe3.agentMode.hideChrome": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "In Agent mode, hide the activity bar, status bar, editor tabs and side panels so the chat fills the window. Your settings are put back when you switch to Editor mode."
+        },
+        "co4fe3.editor.openDiffs": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "In Editor mode, open an edit the agent proposes as a diff in the editor right away, with Accept and Reject on it. Nothing is written until you accept."
         }
       }
     },
     "configurationDefaults": {
-      "diffEditor.codeLens": true
+      "diffEditor.codeLens": true,
+      "comments.openView": "never"
     }
   },
   "scripts": {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyPanelEvent, emptyPanel, rowId, type PanelState } from "../src/panel/reducer.js";
+import { applyPanelEvent, applyPanelBatch, emptyPanel, rowId, type PanelState } from "../src/panel/reducer.js";
 import { coalesce } from "../src/panel/coalesce.js";
 import type { PanelEvent } from "../src/panel/events.js";
 
@@ -54,4 +54,33 @@ describe("coalesce", () => {
     expect((out[1] as typeof text1b).text).toBe("hello");
     expect((out[2] as typeof tool1b).state).toBe("ok");
   });
+});
+
+it("a command card keeps its text when the final update could not read it, and takes the new output", () => {
+  const st = applyPanelBatch(emptyPanel(), [
+    { kind: "command", id: "cmd-1", command: "pytest -q", state: "running", output: ".." },
+    { kind: "command", id: "cmd-1", command: "", state: "done", output: "..F\n", exit: 1, seconds: 2.1 },
+  ]);
+  expect(st.order).toHaveLength(1);
+  expect(st.order[0]!.e).toMatchObject({ command: "pytest -q", state: "done", output: "..F\n", exit: 1 });
+});
+
+it("one session, two requests: each request keeps its own context card in its own place (regression: the second replaced the first)", () => {
+  const pack = { items: [], skipped: [], used: 0, budget: 100, path: "full" as const };
+  const st = applyPanelBatch(emptyPanel(), [
+    { kind: "user", turnId: "t1", text: "one" }, { kind: "pack", pack, turnId: "t1" },
+    { kind: "user", turnId: "t2", text: "two" }, { kind: "pack", pack, turnId: "t2" },
+  ]);
+  expect(st.order.map((r) => r.k)).toEqual(["user", "pack", "user", "pack"]);
+  const note = { kind: "failed" as const, model: "m", failure: { kind: "auth" as const, benchMs: 0, retrySame: false, detail: "403" }, next: null };
+  const notes = applyPanelBatch(emptyPanel(), [{ kind: "model", note, turnId: "t1" }, { kind: "model", note, turnId: "t2" }]);
+  expect(notes.order).toHaveLength(2);
+});
+
+it("an update to an existing row id is visible through order (regression: stale row in order)", () => {
+  const st = applyPanelBatch(emptyPanel(), [text1, text1b]);
+  expect(st.order).toHaveLength(1);
+  const row = st.order[0]!;
+  expect((row.e as typeof text1b).text).toBe("hello");
+  expect(st.byId[rowId(text1)]).toBe(row);
 });

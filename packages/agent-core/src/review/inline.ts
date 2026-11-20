@@ -2,6 +2,13 @@ import { splitLines, eolOf } from "./lines.js";
 import { estimateTokens } from "../context/tokens.js";
 import { pickProblems, renderProblem, type Problem } from "./verify.js";
 
+/** The whole lines (0-based, inclusive) a selection covers. One that ends at column 0 of a later line does not include that line:
+ *  Shift+Down and a triple click both end there, and the untouched line must not become part of the edit. */
+export function selectedLines(sel: { start: { line: number; character: number }; end: { line: number; character: number } }): { start: number; end: number } {
+  const end = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line - 1 : sel.end.line;
+  return { start: sel.start.line, end };
+}
+
 /** Body of the first ``` fence. `complete` once the closing fence arrived. With no fence, the whole text counts once the turn is done. */
 export function extractFence(s: string, done: boolean): { code: string; complete: boolean } | null {
   const open = /```[\w+-]*[ \t]*\r?\n/.exec(s);
