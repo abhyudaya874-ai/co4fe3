@@ -84,14 +84,28 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   }));
   registerReviewCommands(ctx, { review, applier, checkpoints, index, out });                             // 03 commands
 
-  const sessions = new SessionPool(getClient, (mode, model) => buildSpec(                            // 04 pre-warmed sessions
+  const specFor = (mode: "inline" | "agent" | "ask" | "plan", model: string): AgentSpec => buildSpec(   // 04 the inline-spec factory
     (mode === "inline" ? inlineAgent : coderAgent) as unknown as AgentSpec,
-    { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled }));   // the mode decides the tools; inline has none via its own file
-  const router = new Router(getClient, {                                                            // 04 one model; 08 adds fallback and stats
-    order: () => cfg().models.order,
+    { model, editorServer: serverName, mode: mode === "inline" ? "agent" : mode, crew: cfg().crew.enabled });   // the mode decides the tools; inline has none via its own file
+  const sessions = new SessionPool(getClient, specFor);                                             // 04 pre-warmed sessions
+  let discoveredOrder: string[] = [];                                                             // models.order unset → first two TF lists
+  const modelOrder = (): string[] => cfg().models.order.length ? cfg().models.order : discoveredOrder;
+  void getClient().models.list().then(({ data }) => { discoveredOrder = data.slice(0, 2).map((m) => m.name); refreshModel(); }).catch(() => undefined);
+  const router = new Router(ctx, getClient, {                                                       // 08 fallback + stats + benched order
+    order: modelOrder,
+    autoOrderInline: () => cfg().latency.autoOrderInline,
     take: (mode, model) => sessions.take(mode, model),
-    log: (l) => out.info(l),
+    warm: (mode, model) => sessions.warm(mode, model),
+    specFor,
+    log: (l) => { out.info(l); refreshModel(); },                                    // stats change on every note
   });
+  const refreshModel = (): void => {
+    const order = router.order("inline");
+    const primary = modelOrder()[0];
+    const b = primary ? router.benched(primary) : undefined;
+    status.setModel(order[0] ?? "(no model)", b ? { until: b.benchedUntil, why: b.lastError ?? "failed" } : undefined);
+  };
+  refreshModel();
   const panel = new PanelView(ctx);                                                              // 05 the webview
   const crew = new Crew(cfg().mode, (e) => panel.bridge?.push(e));
   const approveCommand = async (p: PendingCall, signal: AbortSignal): Promise<TrueForgeApi.TurnUserEventMessage> => {
@@ -176,6 +190,27 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     }
   };
   ctx.subscriptions.push(vscode.window.registerWebviewViewProvider(PanelView.id, panel, { webviewOptions: { retainContextWhenHidden: true } }));
+  ctx.subscriptions.push(
+    vscode.commands.registerCommand("co4fe3.pickModel", () => pickModel()),
+    vscode.commands.registerCommand("co4fe3.resetStats", () => { router.resetStats(); refreshModel(); void vscode.window.showInformationMessage("co4fe3: model stats cleared."); }),
+  );
+  /** The model picker: TrueForge's list, stats in the description, two picks → models.order (rule 70 §5). */
+  async function pickModel(): Promise<void> {
+    const { data: models } = await getClient().models.list().catch(() => ({ data: [] as { name: string }[] }));
+    if (!models.length) return void vscode.window.showWarningMessage("No models from TrueForge — is it running?");
+    const items = models.map((m) => {
+      const s = router.stat(m.name);
+      const sorted = s ? [...s.ttft].sort((a, b) => a - b) : [];
+      const p50 = sorted.length >= 3 ? `p50 ${(sorted[Math.floor(sorted.length / 2)]! / 1000).toFixed(1)} s` : "no samples";
+      const benched = s && s.benchedUntil > Date.now() ? ` · benched ${Math.ceil((s.benchedUntil - Date.now()) / 60000)} min` : "";
+      return { label: m.name, description: `${p50} · ${s?.ok ?? 0} ok${s?.fail ? ` · ${s.fail} failed` : ""}${benched}` };
+    });
+    const first = await vscode.window.showQuickPick(items, { title: "co4fe3: primary model", placeHolder: "Used first for every request" });
+    if (!first) return;
+    const second = await vscode.window.showQuickPick(items.filter((i) => i.label !== first.label), { title: "co4fe3: fallback model", placeHolder: "Tried when the primary fails (Esc keeps none)" });
+    await vscode.workspace.getConfiguration("co4fe3").update("models.order", second ? [first.label, second.label] : [first.label], vscode.ConfigurationTarget.Workspace);
+    refreshModel();
+  }
   registerInlineEdit(ctx, {                                                                      // 04 Task A
     host, review, sessions, router, out,
     status: { inline: (p) => status.inline(p), setTtft: (ms, m) => status.setTtft(ms, m) },
@@ -187,6 +222,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       });
     },
     index: () => index.get(),
+    cfg,
   });
 }
 

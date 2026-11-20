@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { EditorHost, Proposal, Problem, Decision, ApplyResult, FileEntry } from "@co4fe3/agent-core";
-import { jail, splitLines, toHunks, extractFence, streamingPreview, assembleInline, buildInlinePrompt, PhaseBox, pickProblems, newErrors, BUDGET, Marks, type InlinePhase } from "@co4fe3/agent-core";
+import { jail, splitLines, toHunks, extractFence, streamingPreview, assembleInline, buildInlinePrompt, PhaseBox, pickProblems, newErrors, BUDGET, Marks, fallbackBanner, type Failure, type Note, type InlinePhase } from "@co4fe3/agent-core";
 import type { ReviewController } from "../review/controller.js";
 import type { Router } from "../forge/router.js";
 import type { SessionPool } from "../forge/sessions.js";
@@ -11,6 +11,7 @@ export interface InlineDeps {
   sessions: SessionPool;
   router: Router;
   status: { inline(p: InlinePhase): void; setTtft(ms: number, model: string): void };
+  cfg(): { trueforge: { url: string } };
   applyDecision: (p: Proposal, d: Decision) => Promise<ApplyResult>;
   toastApplied: (p: Proposal, d: Decision, fresh: Problem[]) => void;
   index(): { byPath: Map<string, FileEntry> } | null;
@@ -70,6 +71,7 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
       const prompt = buildInlinePrompt({ path: rel, lang: ed.document.languageId, instruction, text: before, start, end, outline, problems: pickProblems(near), budget: BUDGET.inline });
       phase.to("drafting");
       let acc = "", lastPaint = 0;
+      let firstFail: { model: string; failure: Failure } | null = null;
       const res = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "co4fe3", cancellable: true }, async (progress, token) => {
         token.onCancellationRequested(() => ac.abort());
         return d.router.inline(prompt, {
@@ -80,11 +82,25 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
             const f = extractFence(acc, false);
             if (f && performance.now() - lastPaint > 50) { lastPaint = performance.now(); d.review.preview(rel, key, assembleInline(before, start, end, streamingPreview(original, f.code))); }
           },
+          onNote: (n: Note) => {
+            if (n.kind === "failed" && !firstFail) firstFail = { model: n.model, failure: n.failure };
+            if (n.kind === "answered" && n.fellBack && firstFail)
+              void vscode.window.showWarningMessage(fallbackBanner(firstFail.model, firstFail.failure, n.model));   // rule 70: names the failure + who answered
+          },
         }, ac.signal);
       });
       marks.mark("done");
       const finish = (p: InlinePhase, msg: string) => { phase.to(p); d.review.closeStreaming(rel, key, msg); };
-      if (res.status !== "done") return void finish(res.status === "cancelled" ? "cancelled" : "error", res.status === "cancelled" ? "Cancelled. Nothing was changed." : res.message);
+      if (res.status !== "done") {
+        if (res.status === "cancelled") return void finish("cancelled", "Cancelled. Nothing was changed.");
+        finish("error", res.message ?? "The edit failed.");
+        if (res.message?.includes("No configured model answered")) {          // rule 70: every model failed — offer the two doors
+          const pick = await vscode.window.showErrorMessage(res.message, "Retry", "Open TrueForge settings");
+          if (pick === "Retry") void vscode.commands.executeCommand("co4fe3.inlineEdit");
+          else if (pick === "Open TrueForge settings") void vscode.env.openExternal(vscode.Uri.parse(d.cfg().trueforge.url));
+        }
+        return;
+      }
       if (ed.document.version !== version) return void finish("sourceChanged", "The file changed while drafting. Nothing was changed; run the edit again.");
       const f = extractFence(res.output, true);
       if (!f?.code.trim()) return void finish("error", "The model returned no code. Nothing was changed.");

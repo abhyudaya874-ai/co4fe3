@@ -73,6 +73,7 @@ export class AgentTurns {
           if (stop) { bridge.push({ kind: "marker", id: `watch-${e.id}`, text: `Stopped: ${stop}` }); ac.abort(); }   // the crew watchdog (rule 50 §6)
         },
         onPause: this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand }),
+        onNote: (n) => bridge.push({ kind: "model", note: n }),            // attempt/failed/answered rows (rule 70)
       }, ac.signal);
       this.d.review.closeTurn(turnKey);                               // drops undecided proposals (rule 30)
       bridge.push({ kind: "status", state: out.status === "done" ? "done" : out.status, message: out.status === "error" ? out.message : undefined });

@@ -1,3 +1,4 @@
+import type { TurnOutcome } from "./turn.js";
 export type FailKind = "auth" | "not_found" | "rate" | "unreachable" | "stall" | "server" | "context" | "unknown";
 export interface Failure { kind: FailKind; benchMs: number; retrySame: boolean; detail: string }
 
@@ -20,8 +21,7 @@ export const backoffMs = (n: number, rand = Math.random): number => Math.min(400
 
 const firstLine = (m: string): string => m.split("\n")[0]!.trim();
 
-export interface AttemptResult { outcome: TurnOutcomeLike; sideEffects: boolean; firstTokenMs: number | null }
-export interface TurnOutcomeLike { status: "done" | "cancelled" | "error"; reason?: string; message?: string; previousTurnId?: string | null }
+export interface AttemptResult { outcome: TurnOutcome; sideEffects: boolean; firstTokenMs: number | null }
 export type RunOn = (model: string, attempt: number, signal: AbortSignal) => Promise<AttemptResult>;
 export type Note = { kind: "attempt"; model: string; n: number } | { kind: "failed"; model: string; failure: Failure; next: string | null } | { kind: "answered"; model: string; fellBack: boolean };
 

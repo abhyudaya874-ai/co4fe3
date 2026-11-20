@@ -35,7 +35,11 @@ export class StatusItems {
     this.tf.tooltip = "TrueForge connected; co4fe3 editor tools registered";
   }
 
-  setModel(name: string): void { this.model.text = `$(sparkle) ${name.split("/").at(-1) ?? name}`; this.model.tooltip = name; }
+  setModel(name: string, benched?: { until: number; why: string }): void {
+    const short = name.split("/").at(-1) ?? name;
+    this.model.text = benched ? `$(warning) ${short} ⚠` : `$(sparkle) ${short}`;
+    this.model.tooltip = benched ? `${name} — benched until ${new Date(benched.until).toLocaleTimeString()} (${benched.why})` : name;
+  }
   setMode(mode: string): void { this.mode.text = `$(comment) ${mode}`; }
   setTtft(ms: number, model: string): void { this.ttft.text = `⚡ ${(ms / 1000).toFixed(1)} s`; this.ttft.tooltip = `time to first token · ${model}`; }
   inline(phase: string): void { this.ttft.text = `$(loading) ${phase}`; }   // the inline-edit phase while it runs
