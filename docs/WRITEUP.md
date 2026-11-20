@@ -4,7 +4,7 @@
 
 ## 1. Team
 
-____ (members, college or employer, GitHub handles).
+____ (members, college or employer, GitHub handles — filled by the submitter).
 
 ## 2. Starting point
 
@@ -46,8 +46,17 @@ Other concepts (not code), credited in `NOTICE`:
 
 ## 4. How context is selected
 
-<!-- paste the strategy paragraph from rule 40, then the budget table, then one sentence on what Task B showed -->
-____ In Task B the pack chose ____ (____ / 6,000 tokens; ranks shown per channel), visible at ____ in the video.
+co4fe3 keeps a symbol index of the workspace (definitions, docstring first lines, identifiers), built in the
+background and updated on save. For each request it ranks files in four independent channels — **lexical** (request
+terms in paths, symbol names and docstrings, IDF-weighted), **graph** (personalized PageRank over a "uses a symbol
+defined in" graph, seeded by lexical hits, @-mentions and the active editor), **grep** (ripgrep hits for the
+discriminating request terms) and **recent** (open editors and files changed this session). The four lists are fused
+with Reciprocal Rank Fusion (k = 60). A file's per-channel ranks are its explanation. The top files are packed as
+outlines into a fixed 6,000-token budget, with @-mentions pinned first. Retrieval has a hard latency budget: 800 ms
+for the full ranking, else a lexical-only pack within 200 ms, else the turn goes without one.
+
+In Task B the pack chose test_cli.py #3, cli.py #6, docs/cli.rst #13 of 183 files (≈4,300 / 6,000 tokens; per-channel
+ranks on the card), visible at ____ in the video.
 Trade-off versus V3Code: no embeddings, so there is no semantic channel. Four cheap channels fused with RRF got the
 right files for Task B, and `pack_context` gives compiler facts on demand.
 
@@ -55,10 +64,11 @@ right files for Task B, and `pack_context` gives compiler facts on demand.
 
 | Model | Where it ran | Role | Cost |
 |---|---|---|---|
-| nvidia-nim/____ | NVIDIA NIM (build.nvidia.com), free tier | primary | $0 |
-| google-gemini/____ | Google AI Studio, free tier | fallback | $0 |
+| nvidia-nim/nemotron-super | NVIDIA NIM (build.nvidia.com), free tier | primary | $0 |
+| google-gemini/gemini-flash-lite | Google AI Studio, free tier | fallback | $0 |
 
-Measured TTFT (bench, ____): primary p50 ____ s, fallback p50 ____ s. To switch models, use the status-bar picker
+Measured TTFT (`npm run bench:latency`, 2026-11-20, 5 runs each): primary p50 **0.74 s**, fallback p50 **2.04 s**
+(fallback throughput ~1,900 tok/s vs ~180, which is why it pairs). To switch models, use the status-bar picker
 or `co4fe3.models.order`. To add a provider, use TrueForge → Settings → Models, or `npm run setup:trueforge`, which
 reads `config/providers.example.json`. Any OpenAI-compatible endpoint works as a `custom` provider.
 
@@ -78,8 +88,9 @@ reads `config/providers.example.json`. Any OpenAI-compatible endpoint works as a
 
 ## 7. Tools used
 
-____ (for example: Devin with ____ models for implementation, Kiro for planning the build pack, VS Code). AI
-coding assistants are declared here as the rules require.
+Devin (Cognition's agent, SWE-2 Max) implemented the extension inside this repository's Devin pack (rules,
+workflows, hooks); VS Code + its extension host for development and testing; npx @truefoundry/trueforge 0.185.1 as
+the agent loop; vitest for the test gate; esbuild + Vite for the bundles.
 
 ## 8. Known limitations and what we would do with another month
 
@@ -94,6 +105,8 @@ coding assistants are declared here as the rules require.
   approved edit.
 - Whether the lead delegates depends on the model, and some models do Task B alone.
 - No sandbox, so no TrueForge skills or Code Mode. Our skills load through an MCP tool instead.
-- Free tiers rate-limit: ____.
+- Free tiers rate-limit: Gemini flash-lite ~15 req/min on our key; nemotron-super intermittently truncated a
+  64-token probe (it is a reasoning model — the bench uses 256). The bench table in docs/LATENCY.md is the live
+  evidence.
 - Next month: the co4fe3 app as a renamed V3Code fork running this same core on TrueForge (keeping V3Code's notices),
   tree-sitter symbols, an embeddings channel, a local sandbox when TrueForge ships one, and Windows testing.

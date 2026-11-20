@@ -22,7 +22,10 @@ fork point · architecture diagram · tests · license.
 
 ## Clean-clone test
 
-`rm -rf /tmp/cc && git clone "$PWD" /tmp/cc && cd /tmp/cc && npm ci && npm run verify` — result below.
+`rm -rf /tmp/cc && git clone "$PWD" /tmp/cc && cd /tmp/cc && npm ci && npm run verify` → **all stages passed**
+(invariants 746, hooks 36, typecheck, unit 208, perf 7, integration 11, build, e2e 2 — incl. a fresh VS Code
+1.147 download). The `npm ci` install-scripts warning (esbuild/@vscode/vsce-sign) did not break the build —
+esbuild's postinstall is not required on this toolchain.
 
 ## PENDING THE HUMAN
 
