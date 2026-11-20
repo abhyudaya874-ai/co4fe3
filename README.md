@@ -1,31 +1,68 @@
-# co4fe3 — Devin pack
+# co4fe3 — a VS Code coding agent on TrueForge
 
-co4fe3 is a VS Code coding agent whose agent loop runs on **TrueForge** (local mode). It is the entry for the
-Techfest 2026-27 TrueFoundry Forge-a-thon, Round 1 (deadline **20 Nov 2026, 23:59 IST**).
+co4fe3 is a VS Code extension whose agent loop runs entirely on **TrueForge local mode** (`npx @truefoundry/trueforge`
+on `localhost:8790`). The extension never calls a model provider: it creates sessions, streams turns, answers approval
+pauses and renders everything. Editor capabilities are exposed to the agent as an authenticated HTTP MCP server on
+127.0.0.1 — `propose_edit` and `run_command` pause for human approval, and that pause is the per-hunk diff review.
 
-This folder is the build kit: the rules, workflows, skills, subagent profiles, hooks and docs a coding agent (Devin, or
-any agent that reads `AGENTS.md`) needs to build co4fe3 without making architecture mistakes. Every rule carries the
-code it expects, so a small model copies a shape instead of inventing one.
+> GIF of Task A lands here (`media/task-a.gif`, recorded in workflow 11).
 
-The architecture follows **V3Code** (`/home/de3p/V3Code`, an Apache-2.0 AI editor built on Void and Code-OSS) wherever
-a VS Code extension can do the same thing. `docs/study/v3code.md` maps each borrowed idea to its V3Code file. No V3Code
-code is copied (rule 05).
+## Requirements
 
-## Install
+- Node ≥ 22.14, npm, git
+- VS Code ≥ 1.90 (the Extension Development Host for `npm run dev`, or a normal install for the .vsix)
+- Python ≥ 3.9 for the flask demo workspace
+- An **NVIDIA NIM** key and a **Gemini** key (free tiers are fine), or any OpenAI-compatible endpoint
+  (`config/providers.example.json` shows OpenRouter / OmniRoute / freellmapi / Ollama shapes too)
+
+## Setup from a clean clone
 
 ```bash
-cd /home/de3p/co4fe3
-chmod +x scripts/hooks/*.sh
-bash scripts/hooks/test-hooks.sh      # the hooks guard every edit; this proves they work (needs jq)
-node scripts/check-invariants.mjs     # the mechanical laws; passes on the bare pack
+git clone https://github.com/<you>/co4fe3 && cd co4fe3
+npm ci
+npm run trueforge                            # terminal 1: TrueForge local on http://localhost:8790
+cp config/providers.example.json config/providers.json
+export NVIDIA_API_KEY=…  GEMINI_API_KEY=…    # keys live in env vars; nothing writes them to disk
+npm run setup:trueforge                      # registers both providers + prints models.list + the order
+npm run build
+code --extensionDevelopmentPath="$PWD/extensions/co4fe3-vscode" /path/to/flask   # or: install the .vsix
 ```
 
-Then do the five steps in `MASTER_PROMPT.md` Part 1 (clean tree, `.env`, TrueForge in a terminal), open
-`/home/de3p/co4fe3` in Devin and paste Part 2. Devin runs `/start-session`, then the workflows in numeric order
-without waiting between them, and writes a report and a `docs/progress/NN-*.md` file after each one. Part 3 resumes a
-new session. Keep `/home/de3p/V3Code` where it is: the rules read it, and the hooks refuse writes into it.
+TrueForge needs outbound access to `localhost` (our MCP server) — `npm run trueforge` sets
+`OUTBOUND_URL_ALLOWED_HOSTS='["127.0.0.1","localhost"]'` itself.
 
-## What the product is (one screen)
+## The agent definitions
+
+Sessions are created from `agents/co4fe3-coder.agent.json` (agent panel) and `agents/co4fe3-inline.agent.json`
+(inline edit) automatically — no manual step. To also see them as saved agents in the TrueForge UI, run
+`node scripts/save-agents.mjs` (uses `client.agents.create`/`update`).
+
+## Use it
+
+- **Inline edit (Ctrl+Alt+K)**: select code, describe the change, watch the diff stream into a diff editor.
+  Accept or reject **per hunk**; `co4fe3: Undo` restores exact bytes. `co4fe3: Stop` cancels mid-stream.
+- **Agent panel** (the co4fe3 sidebar): Agent / Ask / Plan modes, `@file` and `@symbol` mentions, `/workflow`
+  expansion, streamed crew rows (lead briefs → member reports), tool cards, per-hunk diff review, a command
+  card for `run_command`, and **Open session in TrueForge** for the live session page.
+- **Stop** cancels the turn at once; nothing half-applies because writes only happen after you accept a hunk.
+- **Plan mode** answers with a numbered plan and never opens a review.
+
+## Switch models
+
+The status-bar model item opens `co4fe3: Pick model` (lists TrueForge's `models.list`, with measured stats in the
+description), or set `co4fe3.models.order` directly. If the primary fails — bad key, 500, hang — the request falls
+back automatically to the second model, the banner says who failed and who answered, and the model gets benched
+until its cooldown expires (`co4fe3: Reset model stats` clears this). To add a provider, use TrueForge's
+Settings → Models.
+
+## Fork point
+
+Built from scratch — no upstream editor code. The architecture follows **V3Code**
+(github.com/HeavenFYouMissed/V3Code, Apache-2.0, studied at commit `2eac91fb`), reimplemented in our own code
+(rule 05: read it, never copy it). Ideas (not code) from Cline, Continue, Aider and our own UltraPals project are
+credited in `NOTICE` and the write-up.
+
+## Architecture
 
 ```
 VS Code ─┬─ Inline edit (Ctrl+Alt+K) ──────────────┐
@@ -38,89 +75,23 @@ VS Code ─┬─ Inline edit (Ctrl+Alt+K) ────────────�
                 └── VS Code language features (LSP)         load_instructions · propose_edit · run_command
 ```
 
-- **TrueForge runs the loop.** The extension creates sessions, streams turns, answers pauses and cancels. It never calls
-  a model provider.
-- **Editor capabilities are MCP tools.** TrueForge calls them over HTTP on 127.0.0.1. `propose_edit` and `run_command`
-  are gated by **TrueForge tool approval**, and that approval pause is where the per-hunk diff review happens.
-  "Read-only" means "has no approval category", and the Agent/Ask/Plan modes are derived from that one map (V3Code).
-- **Nothing reaches disk before a person accepts a hunk.** Every applied hunk has a checkpoint, so Undo restores exact
-  bytes. After an apply, only errors the edit *introduced* are reported back (V3Code's verify-against-baseline).
-- **Context is ranked, budgeted and explained.** Four cheap channels (lexical, dependency graph, grep, recent) are fused
-  with Reciprocal Rank Fusion. The pack card shows each file's rank per channel. `pack_context` returns
-  definitions, callers and diagnostics from the language server, under a token budget.
-- **The crew follows UltraPals' and V3Code's rules.** The lead is the only voice. It briefs subagents that TrueForge
-  spawns (the lead names them) with a `research` or `work` profile that code enforces. Each subagent reports back once,
-  and a report that claims edits it never made is marked blocked. Subagents never message each other; they share facts
-  on the board.
-- **Latency comes from design and gets measured.** One round trip for inline edit, preloaded tools in read-first order,
-  a pre-warmed session, a retrieval budget with a lexical fallback, delayed hedging, stall watchdogs, and per-model
-  time-to-first-token stats that order the models.
+- `packages/agent-core` is the pure-TS brain (no `vscode`, no `child_process`, no `fs` writes): turn driver, MCP
+  tools, ranking, review math, modes/crew, stats + fallback.
+- `extensions/co4fe3-vscode` is the VS Code glue: `host/` implements `EditorHost`, `review/apply.ts` is the
+  **only** file that can write workspace bytes, `panel/` is the webview bridge, `forge/` the session pool + router.
+- Design reasoning: `docs/DECISIONS.md`. Latency budgets + measured numbers: `docs/LATENCY.md`.
 
-## Files
+## Tests
 
-```
-co4fe3/
-├── README.md                     this file
-├── AGENTS.md                     read first: laws, read order, commands, definition of done
-├── MASTER_PROMPT.md              paste into Devin to start
-├── NOTICE                        design credits (V3Code, Void, Cline, Aider, Continue); no third-party code
-├── .devin/
-│   ├── config.json               permissions (allow / ask / deny)
-│   ├── hooks.v1.json             SessionStart · PreToolUse(exec, edit) · PostToolUse(edit) · Stop
-│   ├── rules/
-│   │   ├── 00-mission.md         product, eligibility gate, scoring map, non-goals
-│   │   ├── 05-reference-v3code.md  V3Code as reference architecture: ideas yes, code never
-│   │   ├── 10-architecture.md    layers, package boundaries, the single write path
-│   │   ├── 20-trueforge.md       the verified SDK surface and its traps
-│   │   ├── 30-review-and-safety.md  hunks, approval→review, conflicts, verify, checkpoints, undo, cancel
-│   │   ├── 40-context.md         channels + RRF, context pack, pack_context, budgets, @mentions
-│   │   ├── 50-crew.md            modes, profiles, runtime policy, lead + subagents, evidence, board
-│   │   ├── 60-latency.md         budgets, levers, adaptive model order, delayed hedge, watchdogs
-│   │   ├── 70-models.md          providers, fallback state machine (Task C)
-│   │   ├── 80-testing.md         test pyramid, fake model server, fixtures, perf tests
-│   │   ├── 85-instructions.md    the product reads AGENTS.md, rules, workflows, skills
-│   │   ├── 90-small-model-protocol.md
-│   │   └── 95-commit-and-timebox.md
-│   ├── workflows/                start-session, 00-bootstrap … 13-submit, feature-slice, bug-triage, release-check
-│   ├── skills/<name>/SKILL.md    explore-codemap, ship-slice, verify-loop, review-diff, research-web,
-│   │                             trueforge-sdk, vscode-extension, latency-probe, judge-mode, orchestrate
-│   └── agents/                   forge-scout, forge-editor, forge-verifier, forge-reviewer, forge-oracle
-├── scripts/
-│   ├── hooks/*.sh                the guards the hooks run; test-hooks.sh proves them
-│   ├── verify.mjs                the gate; writes .devin/.last-verify
-│   ├── check-invariants.mjs      mechanical architecture checks
-│   └── setup-trueforge.mjs, bench-latency.mjs, smoke-live.mjs, save-agents.mjs
-├── docs/
-│   ├── CODEMAP.md                every planned file and its exact exports (look names up here)
-│   ├── PATTERNS.md               copyable recipes
-│   ├── ANTI-PATTERNS.md          wrong → right
-│   ├── DECISIONS.md              why each choice was made
-│   ├── LATENCY.md                how to measure, what the numbers mean
-│   ├── WRITEUP.md                the 8-heading write-up skeleton and scorecard
-│   ├── BACKLOG.md                deferred work (the app on a V3Code fork comes after Round 1)
-│   └── study/v3code.md           the V3Code architecture map and the adopt/adapt/skip table
-├── agents/                       the TrueForge agent definitions the product uses (judges require them)
-│   ├── co4fe3-coder.agent.json
-│   └── co4fe3-inline.agent.json
-└── config/
-    └── providers.example.json    model providers for TrueForge, no keys
+```bash
+npm run verify          # invariants (740 checks) → typecheck → unit → perf → integration → e2e
+npm run verify:fast     # invariants + typecheck + unit only
+npm run bench:latency   # live TTFT/throughput table through TrueForge for every configured model
 ```
 
-## Sources the pack was checked against (19 Nov 2026)
+Integration tests run a real TrueForge plus a scripted OpenAI-compatible fake model server plus the real MCP
+server over a temp workspace. The e2e tests launch the Extension Development Host.
 
-- TrueForge docs: trueforge.dev (quickstart, SDK quickstart, use-agent, create-agent, models, MCP servers, subagents,
-  deferred tool loading, roadmap) and the OpenAPI pages for sessions, turns, MCP servers and model providers.
-- `@truefoundry/trueforge-sdk@0.185.0` type definitions on unpkg: `SessionsClient`, `BaseClient`,
-  `ModelProvidersClient`, `AgentSpec`, `RuntimeConfig`, `McpServer`, `ModelParams`, `ThreadCreatedEvent`,
-  `ThreadDoneEvent`, `ModelMessageEvent`.
-- `@modelcontextprotocol/sdk@1` type definitions: `server/mcp.d.ts` (`registerTool`), `server/streamableHttp.d.ts`
-  (stateless `sessionIdGenerator: undefined`).
-- VS Code built-in commands (code.visualstudio.com/api/references/commands): `vscode.executeDocumentSymbolProvider`,
-  `executeDefinitionProvider`, `executeReferenceProvider`, `executeHoverProvider`, `prepareCallHierarchy`,
-  `provideIncomingCalls`.
-- V3Code (`/home/de3p/V3Code`, commit `2eac91fb`): `localAgentRuntime.ts`, `subagentLifecycle.ts`,
-  `toolsServiceTypes.ts`, `prompt/prompts.ts`, `chatThreadService.ts`, `editCodeService.ts`, `turboDraft*.ts`,
-  `semanticIndex/{rrf,retriever,retrieveBudget,chunker}.ts`, `autoContextService.ts`,
-  `contextBridge/contextBridgeTools.ts`, `mcpExpose/*`, `skillsService.ts`, `convertToLLMMessageService.ts`.
-- UltraPals (`/home/de3p/paypal`): `lib/computer/main-agent.ts`, `events.ts`, `run.ts`, `model.ts`,
-  `lib/swarm/tree/policy.ts`, `lib/integrations/chat.ts` (the NIM base URL and Gemini limits were measured there).
+## License
+
+MIT — see `LICENSE` and `NOTICE`.
