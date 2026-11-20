@@ -52,7 +52,7 @@ The "V3Code" column names the idea a file reimplements (`docs/study/v3code.md`).
 | `instructions/load.ts` | `Trigger` · `Instruction` · `InstructionSet` · `INSTRUCTION_FILES` · `FILE_CAP(path)` · `loadInstructions(host)` · `selectInline(set, files, budget?)` · `activeSkills(set, request, files, budget?)` · `renderInstructions(base, sel, skills)` · `renderActiveSkills(skills)` · `globToRegExp(g)` · `expandWorkflow(set, input)` | 85 | `WORKSPACE_INSTRUCTION_PATHS`, `<skills_index>` |
 | `panel/index.ts` | re-exports `panel/events`, `panel/reducer`, `panel/coalesce`. **The only agent-core entry the webview may import** (`@co4fe3/agent-core/panel`). Type-only imports from outside `panel/`. | 05 | |
 | `panel/events.ts` | `PanelEvent` · `UiCommand` · `HunkView { id; oldStart; oldLines; newLines }` | 05 | |
-| `panel/reducer.ts` | `PanelState` · `Row` · `emptyPanel(): PanelState` · `rowId(e): string` · `applyPanelEvent(s, e): PanelState` | 05 | |
+| `panel/reducer.ts` | `PanelState` · `Row` · `emptyPanel(): PanelState` · `rowId(e): string` · `applyPanelEvent(s, e): PanelState` · `applyPanelBatch(s, events): PanelState` (09: one reducer pass per bridge batch) | 05 | |
 | `panel/coalesce.ts` | `coalesce(batch: readonly PanelEvent[]): PanelEvent[]` | 05 | |
 | `util/stable.ts` | `stableStringify(v): string` · `sha256Hex(s): string` | 02 | |
 | `util/jail.ts` | `class ToolInputError extends Error` · `jail(root, p): string` | 30 | |
