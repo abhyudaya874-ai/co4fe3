@@ -25,9 +25,27 @@ perf ttft=1430 created=212 total=4870 model=google-gemini/gemini-flash-lite
 
 `perf mcp.read_file 4ms` is one tool handler. `perf index.build 820ms files=412` is the background index.
 
-## Live bench results (fill in from `npm run bench:latency` before recording)
+## Live bench results (from `npm run bench:latency`, 2026-11-20)
 
-Date: ____  TrueForge: ____  Runs per model: 5  Machine: ____
+Date: 2026-11-20  TrueForge: localhost:8790 (0.185.1)  Runs per model: 5  Machine: dev laptop, IST 08:52
+
+```
+model                                      ok   ttft p50  ttft p90  total p50  tok/s  tool
+nvidia-nim/nemotron-super                  4/5   0.74 s    1.37 s    2.04 s    182   ok
+google-gemini/gemini-flash-lite            5/5   2.04 s    2.43 s    2.04 s   1921   ok
+
+recommended co4fe3.models.order: ["nvidia-nim/nemotron-super","google-gemini/gemini-flash-lite"]
+(primary = fastest p50 TTFT that passes the tool probe; fallback = fastest on another provider)
+```
+
+Read: nemotron's TTFT is ~2.7× better — it stays the primary for inline edit, where TTFT is what the user
+feels. Gemini streams ~10× faster, so for agent mode (many tool round trips, long outputs) it is the better
+second leg anyway. The bench's recommendation equals the shipped order: no change.
+
+Caveat recorded honestly: nemotron is a reasoning model — the first bench run scored it 0/5 only because the
+script's `maxTokens: 64` text probe left no room for reasoning before the content. Raised to 256 in this commit;
+the 4/5 row above is the fair measure.
+
 
 | model | ok | TTFT p50 | TTFT p90 | total p50 | tok/s | tool probe |
 |---|---|---|---|---|---|---|

@@ -42,7 +42,18 @@ export function nodeTestHost(root: string): EditorHost {
     },
     listFiles: async () => { throw new Error("nodeTestHost.listFiles is wired in workflow 02"); },
     search: async () => { throw new Error("nodeTestHost.search is wired in workflow 02"); },
-    run: async () => { throw new Error("nodeTestHost.run is wired in workflow 02"); },
+    run: async (req, signal) => {
+      const t0 = performance.now();
+      const { exec } = await import("node:child_process");
+      const out = await new Promise<{ exitCode: number | null; output: string; timedOut: "wall_clock" | null; killed: boolean }>((resolve) => {
+        const cp2 = exec(req.command, { cwd: root, timeout: req.timeoutMs, maxBuffer: req.maxOutputBytes * 2, windowsHide: true }, (err, stdout, stderr) => {
+          const killed = signal.aborted || (err as { killed?: boolean } | null)?.killed === true || (err as { signal?: string } | null)?.signal === "SIGTERM";
+          resolve({ exitCode: err ? ((err as { code?: number }).code ?? 1) : 0, output: `${stdout ?? ""}${stderr ?? ""}`.slice(0, req.maxOutputBytes), timedOut: killed ? "wall_clock" : null, killed: Boolean(killed) });
+        });
+        signal.addEventListener("abort", () => cp2.kill("SIGTERM"), { once: true });
+      });
+      return { exitCode: out.exitCode, output: out.output, truncated: false, timedOut: out.timedOut, killed: out.killed, ms: Math.round(performance.now() - t0) };
+    },
     problems: async () => [],
     lsp: { documentSymbols: async () => [], references: async () => [], incomingCalls: async () => [], hover: async () => [] },
     now: () => Date.now(),

@@ -94,6 +94,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const router = new Router(ctx, getClient, {                                                       // 08 fallback + stats + benched order
     order: modelOrder,
     autoOrderInline: () => cfg().latency.autoOrderInline,
+    hedgeInline: () => cfg().latency.hedgeInline,
     take: (mode, model) => sessions.take(mode, model),
     warm: (mode, model) => sessions.warm(mode, model),
     specFor,
@@ -131,6 +132,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     cfg, serverName,
     instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
     packFor: (text, active, recent) => packs.packFor(text, active, recent),                  // 06
+    status: { setTtft: (ms, m) => status.setTtft(ms, m) },
     turn: turnRef,
     recent: () => changedPaths,
     approveCommand, out,
@@ -139,6 +141,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     switch (m.type) {
       case "ready": panel.bridge?.flush(); break;
       case "send": void turns.send(m.text); break;
+      case "focus": { const m0 = router.order("agent")[0]; if (m0) sessions.warm("agent", m0); break; }   // lever 3
       case "stop": turns.stop(); break;
       case "decide": {
         const p = review.store.get(m.key);

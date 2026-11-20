@@ -10,10 +10,11 @@ export const Header = memo(function Header({ mode, model, onMode }: { mode: Mode
 
 const ACTIVE_TOKEN = /(^|\s)(@[\w./-]*|\/[\w-]*)$/;
 
-export const Composer = memo(function Composer({ busy, onSend, onStop, completions, onComplete }: {
+export const Composer = memo(function Composer({ busy, onSend, onStop, onFocus, completions, onComplete }: {
   busy: boolean;
   onSend(text: string): void;
   onStop(): void;
+  onFocus(): void;
   completions: { kind: "@" | "/"; items: string[] } | null;
   onComplete(kind: "@" | "/", prefix: string): void;
 }) {
@@ -36,6 +37,8 @@ export const Composer = memo(function Composer({ busy, onSend, onStop, completio
         `${completions.kind}${it}`))),
     h("textarea", {
       value: draft, placeholder: busy ? "Running — Send is Stop" : "Ask, @file or @symbol:Name, or /workflow",
+      onFocus,
+
       onChange: (e) => onDraft((e.target as HTMLTextAreaElement).value),
       onKeyDown: (e) => {
         if (e.key === "Enter" && !e.ctrlKey) { e.preventDefault(); submit(); }

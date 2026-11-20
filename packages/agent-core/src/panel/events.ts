@@ -26,7 +26,7 @@ export type PanelEvent =
   | { kind: "status"; state: "running" | "paused" | "stopping" | "done" | "cancelled" | "error"; message?: string; sessionUrl?: string };
 
 export type UiCommand =
-  | { type: "ready" } | { type: "send"; text: string } | { type: "stop" }
+  | { type: "ready" } | { type: "send"; text: string } | { type: "stop" } | { type: "focus" }
   | { type: "decide"; key: string; hunkId: string; verdict: "accepted" | "rejected" } | { type: "decideAll"; key: string; verdict: "accepted" | "rejected" }
   | { type: "openDiff"; key: string } | { type: "command"; id: string; verdict: "allow" | "deny" }
   | { type: "undo"; checkpointId: string } | { type: "revertTurn"; turnId: string }

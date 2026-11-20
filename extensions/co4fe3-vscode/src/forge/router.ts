@@ -1,7 +1,7 @@
 import type { TrueForge, TrueForgeApi } from "@truefoundry/trueforge-sdk";
 import type * as vscode from "vscode";
 import type { AttemptUi, AgentSpec, AttemptResult, Note, TurnOutcome, TurnHooks } from "@co4fe3/agent-core";
-import { attemptTurn, runWithFallback, classifyFailure, noteLine, allFailedLine, orderModels, emptyStat, record, stallMs, realSleep, type ModelStat } from "@co4fe3/agent-core";
+import { attemptTurn, runWithFallback, classifyFailure, noteLine, allFailedLine, orderModels, emptyStat, record, stallMs, hedgeDelayMs, hedged, AttemptFailed, collectFailures, realSleep, type ModelStat, type Attempt, type AttemptResult as AR, type Failure } from "@co4fe3/agent-core";
 
 export type InlineResult = Extract<TurnOutcome, { status: "done" }> | Extract<TurnOutcome, { status: "cancelled" }> | Extract<TurnOutcome, { status: "error" }>;
 type Mode = "inline" | "agent";
@@ -10,6 +10,7 @@ interface Take { (mode: "inline" | "agent", model: string): Promise<{ id: string
 export interface RouterDeps {
   order: () => string[];                                  // cfg().models.order
   autoOrderInline: () => boolean;                         // cfg().latency.autoOrderInline
+  hedgeInline: () => boolean;                             // cfg().latency.hedgeInline (rule 60 lever 9)
   take: Take;
   warm: (mode: "inline" | "agent", model: string) => void;
   specFor: (mode: "inline" | "agent" | "ask" | "plan", model: string) => AgentSpec;
@@ -44,8 +45,14 @@ export class Router {
 
   /** One inline-edit turn: tries the model order, benches failures, hedging lands in workflow 09. */
   async inline(prompt: string, ui: AttemptUi & { onNote(n: Note): void }, signal: AbortSignal): Promise<InlineResult> {
-    const models = this.order("inline");
+    let models = this.order("inline");
     if (!models.length) return { status: "error", turnId: undefined, previousTurnId: null, message: "No model configured. Set co4fe3.models.order or run npm run setup:trueforge.", sawOutput: false };
+    if (this.deps.hedgeInline() && models.length >= 2) {                                     // lever 9: race the first two, fall back through the rest
+      const hedge = await this.hedgedInline(prompt, ui, models[0]!, models[1]!, signal);
+      if (hedge) return hedge;
+      models = models.slice(2);                                                            // both lost the race: continue with the rest
+      if (!models.length) return { status: "error", turnId: undefined, previousTurnId: null, message: allFailedLine(this.lastFailures), sawOutput: false };
+    }
     const r = await runWithFallback(models, async (model, _n, s) => {
       const session = await this.deps.take("inline", model);
       try {
@@ -60,6 +67,39 @@ export class Router {
     this.last = r.model;
     this.deps.log(`inline turn ${o.status} model=${r.model}`);
     return o;
+  }
+
+  private lastFailures: { model: string; failure: Failure }[] = [];
+
+  /** Lever 9: race models[0] vs models[1]; null means both lost — fall back through the remaining order. */
+  private async hedgedInline(prompt: string, ui: AttemptUi & { onNote(n: Note): void }, first: string, second: string, signal: AbortSignal): Promise<InlineResult | null> {
+    let leader: string | null = null;
+    const attempt = (model: string): Attempt<AR> => async (s, onFirst) => {
+      const session = await this.deps.take("inline", model);
+      try {
+        ui.onNote({ kind: "attempt", model, n: 1 });
+        const res = await attemptTurn({ client: this.getClient(), sessionId: session.id, text: prompt, previousTurnId: "none", stallMs: stallMs(this.stats()[model]), model },
+          { ...ui, onText: (t, th) => { onFirst(); leader ??= model; if (leader === model) ui.onText(t, th); } }, s);   // the UI follows one leader
+        this.record(model, res);
+        if (res.outcome.status === "done") return res;
+        const failure = res.outcome.status === "error" ? classifyFailure(res.outcome.message ?? "error") : { kind: "stall" as const, benchMs: 60_000, retrySame: false, detail: "no first token in time" };
+        ui.onNote({ kind: "failed", model, failure, next: null });
+        throw new AttemptFailed(model, failure);
+      } finally { this.deps.warm("inline", model); }
+    };
+    try {
+      const { winner, value } = await hedged(attempt(first), attempt(second), hedgeDelayMs(this.stats()[first]), signal);
+      const model = winner === "a" ? first : second;
+      ui.onNote({ kind: "answered", model, fellBack: winner === "b" });
+      this.last = model;
+      this.deps.log(`inline turn ${value.outcome.status} model=${model} (hedged)`);
+      return value.outcome;
+    } catch (e) {
+      if (signal.aborted) return { status: "cancelled", turnId: undefined, reason: "client-cancelled" };
+      this.lastFailures = collectFailures(e);
+      if (!this.lastFailures.length) this.lastFailures = [first, second].map((m) => ({ model: m, failure: classifyFailure(String(e)) }));
+      return null;                                                                         // keep going through the rest of the order
+    }
   }
 
   /** One agent turn on the panel's chat session: tools enabled, pauses answered by the panel, fallback via sessions.update. */

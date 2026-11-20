@@ -35,3 +35,8 @@ export function applyPanelEvent(s: PanelState, e: PanelEvent): PanelState {
   const row: Row = { k: e.kind, id, e: merged };
   return prev ? { ...s, byId: { ...s.byId, [id]: row } } : { ...s, order: [...s.order, row], byId: { ...s.byId, [id]: row } };
 }
+
+/** One reducer pass for a whole bridge batch (rule 60 lever 10): the webview dispatches the batch once. */
+export function applyPanelBatch(s: PanelState, events: readonly PanelEvent[]): PanelState {
+  return events.reduce(applyPanelEvent, s);
+}

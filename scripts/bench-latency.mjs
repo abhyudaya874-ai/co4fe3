@@ -70,7 +70,7 @@ const results = [];
 for (const fqn of models) {
   const runs = [];
   for (let i = 0; i < RUNS; i++) {
-    try { runs.push(await timedTurn({ model: { name: fqn, params: { temperature: 0, maxTokens: 64 } }, instructions: "Reply with one short sentence.", config: cfg }, `Say hello in five words. (${i})`)); }
+    try { runs.push(await timedTurn({ model: { name: fqn, params: { temperature: 0, maxTokens: 256 } }, instructions: "Reply with one short sentence.", config: cfg }, `Say hello in five words. (${i})`)); }
     catch (e) { runs.push({ status: "error", message: e instanceof Error ? e.message : String(e) }); }
     await sleep(pace(fqn));
   }

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { PendingCall, TrueForgeApi, ContextPack, InstructionSet } from "@co4fe3/agent-core";
 import type { PanelEvent, UiCommand } from "@co4fe3/agent-core/panel";
-import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, toolNameOf, type TurnOutcome } from "@co4fe3/agent-core";
+import { sessionUrl, renderPack, renderInstructions, renderActiveSkills, selectInline, activeSkills, expandWorkflow, fromForge, TurnPolicy, toolNameOf, Marks, type TurnOutcome } from "@co4fe3/agent-core";
 import type { Bridge } from "./bridge.js";
 import type { Board } from "@co4fe3/agent-core";
 import type { Crew } from "./crew.js";
@@ -29,6 +29,7 @@ export interface AgentTurnDeps {
   turn: { idle: { id: string; signal: AbortSignal; policy: TurnPolicy }; current: { id: string; signal: AbortSignal; policy: TurnPolicy } };
   recent(): string[];
   out: vscode.LogOutputChannel;
+  status: { setTtft(ms: number, model: string): void };
 }
 
 const LEAD = "";
@@ -47,6 +48,7 @@ export class AgentTurns {
     const turnKey = `t${Date.now().toString(36)}`;
     this.d.turn.current = { id: turnKey, signal: ac.signal, policy: new TurnPolicy(turnKey) };
     const bridge = this.d.bridge;
+    const marks = new Marks(); marks.mark("enter");
     bridge.push({ kind: "user", turnId: turnKey, text });
     try {
       const mode = this.d.cfg().mode;                                   // agent | ask | plan, from the header chip (rule 50 §1)
@@ -61,21 +63,32 @@ export class AgentTurns {
       const active = activeSkills(set, text, files);
       bridge.push({ kind: "instructions", inline: sel.inline.map((i) => i.name), onDemand: sel.onDemand.length, activeSkills: active.map((s) => s.name) });
       const session = await this.d.sessions.agent(renderInstructions(LEAD, sel, skills), mode, this.d.router.order("agent")[0] ?? "");   // inline-spec session; buildSpec sets enableTools for the mode
+      marks.mark("session");
       bridge.push({ kind: "status", state: "running", sessionUrl: sessionUrl(this.d.cfg().trueforge.url, session.id) });
       const message = `${renderActiveSkills(active)}${renderPack(pack)}\n\n${expandWorkflow(set, text).text}`;   // volatile parts after the stable prefix
       const out: TurnOutcome = await this.d.router.agent(session, message, {
         onEvent: (e, index) => {
-          for (const pe of fromForge(e, index, { mode, serverName: this.d.serverName })) bridge.push(pe);
+          if (e.type === "turn.created") marks.mark("created");
+          if (e.type === "model.message" || e.type === "model.message.delta") marks.mark("firstDelta");
+          for (const pe of fromForge(e, index, { mode, serverName: this.d.serverName })) {
+            if (pe.kind === "tool") marks.mark("firstTool");
+            bridge.push(pe);
+          }
           const stop = this.d.crew.onEvent(e);
           if (e.type === "model.message") for (const c of e.toolCalls ?? []) { const n = toolNameOf(c, this.d.serverName); if (n) toolNames.set(c.id, n); }
           if (e.type === "tool.response" && toolNames.get(e.toolCallId) === "board_write")
             bridge.push({ kind: "board", entries: this.d.board.read() });   // the board card updates live (rule 50 §5)
           if (stop) { bridge.push({ kind: "marker", id: `watch-${e.id}`, text: `Stopped: ${stop}` }); ac.abort(); }   // the crew watchdog (rule 50 §6)
         },
-        onPause: this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand }),
+        onPause: async (pending, index, sig) => { marks.mark("review"); return await this.pauseMaker({ host: this.d.host, review: this.d.review, crew: this.d.crew, serverName: this.d.serverName, mode, turnKey, sideEffect: () => undefined, autoApproveTerminal: this.d.cfg().autoApprove.terminal, approveCommand: this.d.approveCommand })(pending, index, sig); },
         onNote: (n) => bridge.push({ kind: "model", note: n }),            // attempt/failed/answered rows (rule 70)
       }, ac.signal);
       this.d.review.closeTurn(turnKey);                               // drops undecided proposals (rule 30)
+      marks.mark("done");
+      const line = marks.line(this.d.router.lastModel());
+      this.d.out.info(line);
+      this.d.status.setTtft(marks.span("enter", "firstDelta") ?? 0, this.d.router.lastModel());
+      bridge.push({ kind: "latency", line });
       bridge.push({ kind: "status", state: out.status === "done" ? "done" : out.status, message: out.status === "error" ? out.message : undefined });
       bridge.flush();
     } catch (e) {

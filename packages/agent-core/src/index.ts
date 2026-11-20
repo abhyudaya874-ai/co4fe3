@@ -35,6 +35,7 @@ export * from "./instructions/frontmatter.js";
 export * from "./instructions/load.js";
 export * from "./latency/marks.js";
 export * from "./latency/stats.js";
+export * from "./latency/hedge.js";
 export * from "./util/stable.js";
 export * from "./util/truncate.js";
 export * from "./util/jail.js";

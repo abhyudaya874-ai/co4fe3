@@ -1,6 +1,6 @@
 import { createElement as h, useEffect, useReducer, useState } from "react";
 import type { Mode, PanelEvent, UiCommand } from "@co4fe3/agent-core/panel";
-import { applyPanelEvent, emptyPanel } from "@co4fe3/agent-core/panel";
+import { applyPanelBatch, emptyPanel } from "@co4fe3/agent-core/panel";
 import { Transcript } from "./components/Transcript.js";
 import { Header, Composer } from "./components/Header.js";
 import { StatusLine, BoardCard } from "./components/rows.js";
@@ -8,7 +8,7 @@ import { StatusLine, BoardCard } from "./components/rows.js";
 type Post = (m: UiCommand) => void;
 
 export function App({ post }: { post: Post }) {
-  const [s, dispatch] = useReducer(applyPanelEvent, undefined, emptyPanel);
+  const [s, dispatch] = useReducer(applyPanelBatch, undefined, emptyPanel);
   const [mode, setModeState] = useState<Mode>("agent");
   const [model, setModel] = useState("…");
   const [completions, setCompletions] = useState<{ kind: "@" | "/"; items: string[] } | null>(null);
@@ -16,7 +16,7 @@ export function App({ post }: { post: Post }) {
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
       const m = ev.data as { type: string; batch?: PanelEvent[]; model?: string; mode?: Mode; kind?: "@" | "/"; items?: string[] };
-      if (m.type === "events" && m.batch) for (const e of m.batch) dispatch(e);
+      if (m.type === "events" && m.batch) dispatch(m.batch);            // one pass, one React commit (rule 60 lever 10)
       if (m.type === "hello" && m.model) setModel(m.model);
       if (m.type === "hello" && m.mode) setModeState(m.mode);
       if (m.type === "completions" && m.kind) setCompletions({ kind: m.kind, items: m.items ?? [] });
@@ -40,6 +40,7 @@ export function App({ post }: { post: Post }) {
       busy: s.status?.state === "running" || s.status?.state === "paused",
       onSend: (t) => { setCompletions(null); post({ type: "send", text: t }); },
       onStop: () => post({ type: "stop" }),
+      onFocus: () => post({ type: "focus" }),
       completions,
       onComplete: (kind, prefix) => post({ type: "complete", kind, prefix }),
     }));

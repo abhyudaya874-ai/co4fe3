@@ -7,8 +7,8 @@ export const UserBubble = memo(function UserBubble({ e }: { e: Extract<PanelEven
   return h("div", { className: "row user" }, h("div", { className: "bubble user-bubble" }, e.text));
 });
 
-export const TextRow = memo(function TextRow({ e }: { e: Extract<PanelEvent, { kind: "text" }> }) {
-  return h("div", { className: "row text" }, md(e.text || "…"));
+export const TextRow = memo(function TextRow({ e, streaming }: { e: Extract<PanelEvent, { kind: "text" }>; streaming?: boolean }) {
+  return streaming ? h("pre", { className: "row text stream" }, e.text || "…") : h("div", { className: "row text" }, md(e.text || "…"));   // no re-parse per frame while streaming
 });
 
 export const Thoughts = memo(function Thoughts({ e }: { e: Extract<PanelEvent, { kind: "text" }> }) {

@@ -55,11 +55,12 @@ export class SessionPool {
     return await this.create(mode, model);
   }
 
-  /** The chat session for the panel: one per mode, reused across turns. */
+  /** The chat session for the panel: consumes the composer-focus warm spare when there is one (rule 60 lever 3). */
   async agent(instructions: string, mode: "agent" | "ask" | "plan", model: string): Promise<{ id: string; model: string }> {
-    const spec = this.spec(mode, model);                                // the mode decides the tools (rule 50 §1)
-    const { data: session } = await this.getClient().sessions.create({ agent: { spec: { ...spec, instructions } } }, ONCE);
-    return { id: session.id, model };
+    const spec = { ...this.spec(mode, model), instructions };           // the mode decides the tools (rule 50 §1)
+    const s = await this.take("agent", model);                          // warm spare, or a fresh create (take retries once)
+    await this.getClient().sessions.update(s.id, { agent: { spec } }, ONCE).catch(() => undefined);   // stale file instructions are an acceptable fallback
+    return { id: s.id, model };
   }
 
   private async create(mode: "inline" | "agent", model: string): Promise<{ id: string; model: string }> {

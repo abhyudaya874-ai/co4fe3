@@ -11,7 +11,7 @@ export interface InlineDeps {
   sessions: SessionPool;
   router: Router;
   status: { inline(p: InlinePhase): void; setTtft(ms: number, model: string): void };
-  cfg(): { trueforge: { url: string } };
+  cfg(): { trueforge: { url: string }; latency: { hedgeInline: boolean } };
   applyDecision: (p: Proposal, d: Decision) => Promise<ApplyResult>;
   toastApplied: (p: Proposal, d: Decision, fresh: Problem[]) => void;
   index(): { byPath: Map<string, FileEntry> } | null;
@@ -49,8 +49,8 @@ export function registerInlineEdit(ctx: vscode.ExtensionContext, d: InlineDeps):
     const t0 = performance.now();
     const marks = new Marks(); marks.mark("enter");
     const { start, end } = targetLines(ed);                     // selection → whole lines; empty → enclosing def/class, else the current line
-    const firstModel = d.router.order("inline")[0];
-    if (firstModel) d.sessions.warm("inline", firstModel);      // pre-warm while the user types (rule 60, lever 3)
+    const order = d.router.order("inline");
+    for (const m of order.slice(0, d.cfg().latency.hedgeInline ? 2 : 1)) d.sessions.warm("inline", m);   // pre-warm while the user types (rule 60, lever 3)
     const instruction = opts?.instruction ?? await vscode.window.showInputBox({ title: `co4fe3 · edit lines ${start + 1}-${end + 1}`, prompt: `Model: ${d.router.label("inline")}`, placeHolder: "Describe the change", ignoreFocusOut: true });
     if (!instruction?.trim()) return;
     const rel = jail(d.host.root, vscode.workspace.asRelativePath(ed.document.uri, false));

@@ -13,7 +13,7 @@ export const Transcript = memo(function Transcript({ s, onDecide, onOpen, onVerd
     const e = row.e;
     switch (e.kind) {
       case "user": return h(UserBubble, { key: row.id, e });
-      case "text": return h("div", { key: row.id }, h(TextRow, { e }), h(Thoughts, { e }));
+      case "text": return h("div", { key: row.id }, h(TextRow, { e, streaming: s.status?.state === "running" }), h(Thoughts, { e }));
       case "tool": return h(ToolCard, { key: row.id, e });
       case "member": return h(MemberRow, { key: row.id, e });
       case "message": return h(MessageBubble, { key: row.id, e });
@@ -23,7 +23,9 @@ export const Transcript = memo(function Transcript({ s, onDecide, onOpen, onVerd
       case "marker": return h(Marker, { key: row.id, e });
       case "board": return h(BoardCard, { key: row.id, entries: e.entries });
       case "model": return h(ModelBanner, { key: row.id, e });
-      default: return null;   // instructions/latency render in the header, not the transcript
+      case "latency": return h("div", { key: row.id, className: "row marker latency" }, e.line);
+      case "instructions": return null;   // renders in the header
+      default: return null;
     }
   }));
 });
