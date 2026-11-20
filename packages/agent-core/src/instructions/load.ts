@@ -96,7 +96,13 @@ export const renderActiveSkills = (skills: readonly Instruction[]): string =>
 /** "**" spans folders, "*" stays within one, "?" is one char. Anchored to the whole workspace-relative path. */
 export function globToRegExp(globs: readonly string[]): RegExp[] {
   return globs.map((g) => {
-    const s = g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\/?/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, "(?:.*/)?");
+    const s = g.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*\//g, "\u0000")                       // `**/x` → optional directory prefix
+      .replace(/\*\*/g, "\u0001")                          // trailing/lone `**` → any suffix (spans dirs)
+      .replace(/\*/g, "[^/]*")
+      .replace(/\?/g, "[^/]")
+      .replace(/\u0000/g, "(?:.*/)?")
+      .replace(/\u0001/g, ".*");
     return new RegExp(`^${s}$`);
   });
 }

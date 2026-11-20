@@ -24,7 +24,10 @@ export const Transcript = memo(function Transcript({ s, onDecide, onOpen, onVerd
       case "board": return h(BoardCard, { key: row.id, entries: e.entries });
       case "model": return h(ModelBanner, { key: row.id, e });
       case "latency": return h("div", { key: row.id, className: "row marker latency" }, e.line);
-      case "instructions": return null;   // renders in the header
+      case "instructions": return h("details", { key: row.id, className: "row instr-chip" },
+        h("summary", { className: "muted" }, e.inline.join(" · ") || "no inline files", " · ", `${e.activeSkills.length} skill${e.activeSkills.length === 1 ? "" : "s"} active`, " · ", `${e.onDemand} on demand`),
+        e.inline.length ? h("div", { className: "muted" }, `inline: ${e.inline.join(", ")}`) : null,
+        e.activeSkills.length ? h("div", { className: "muted" }, `skills: ${e.activeSkills.join(", ")}`) : null);
       default: return null;
     }
   }));

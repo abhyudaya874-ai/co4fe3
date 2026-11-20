@@ -61,10 +61,18 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const idleTurn = { id: "idle", signal: new AbortController().signal, policy };
   const turnRef: { idle: typeof idleTurn; current: typeof idleTurn } = { idle: idleTurn, current: idleTurn };   // 06: tools see the live turn
   let lastInstructions: Awaited<ReturnType<typeof loadInstructions>> | null = null;
+  let instructionsStale = true;                                                                // 10: reload when the glob matches
+  const instructions = async (): Promise<NonNullable<typeof lastInstructions>> => {
+    if (!lastInstructions || instructionsStale) { lastInstructions = await loadInstructions(host); instructionsStale = false; }
+    return lastInstructions;
+  };
+  const instrWatch = vscode.workspace.createFileSystemWatcher("{AGENTS.md,CLAUDE.md,.github/*.md,.cursorrules,.v3coderules,.voidrules,.co4fe3/**,.devin/**,.v3code/**}");
+  instrWatch.onDidCreate(() => { instructionsStale = true; }); instrWatch.onDidChange(() => { instructionsStale = true; }); instrWatch.onDidDelete(() => { instructionsStale = true; });
+  ctx.subscriptions.push(instrWatch);
   const mcp = await startMcpHttp(() => createEditorMcpServer({
     host, applier, review: review.store, board,
     index: () => index.get(),
-    instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
+    instructions,
     turn: () => turnRef.current,
     changes: (turnId) => applier.ofTurn(turnId),
     log: (l) => out.info(l),
@@ -130,7 +138,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const turns = new AgentTurns({
     host, review, crew, board, sessions, router, bridge: { push: bridgePush, flush: () => panel.bridge?.flush() } as Bridge,
     cfg, serverName,
-    instructions: async () => { lastInstructions = await loadInstructions(host); return lastInstructions; },
+    instructions,
     packFor: (text, active, recent) => packs.packFor(text, active, recent),                  // 06
     status: { setTtft: (ms, m) => status.setTtft(ms, m) },
     turn: turnRef,
